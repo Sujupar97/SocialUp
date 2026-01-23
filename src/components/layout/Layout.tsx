@@ -4,8 +4,7 @@ import {
     LayoutDashboard,
     Upload,
     BarChart3,
-    Settings,
-    Zap
+    Settings
 } from 'lucide-react';
 import './Layout.css';
 
@@ -27,9 +26,7 @@ export const MainLayout: React.FC = () => {
                         initial={{ opacity: 0, x: -20 }}
                         animate={{ opacity: 1, x: 0 }}
                     >
-                        <div className="logo-icon">
-                            <Zap size={24} />
-                        </div>
+                        <img src="/logo.png" alt="SocialUp" className="logo-image" />
                         <span className="logo-text">SocialUp</span>
                     </motion.div>
                 </div>
