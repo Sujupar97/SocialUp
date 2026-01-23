@@ -2,21 +2,18 @@ import { NavLink, Outlet, Link } from 'react-router-dom';
 import { motion } from 'framer-motion';
 import {
     LayoutDashboard,
-    Users,
     Upload,
-    Share2,
     BarChart3,
     Settings,
     Zap
 } from 'lucide-react';
 import './Layout.css';
 
+// Simplified navigation for TikTok approval
 const navItems = [
     { path: '/', icon: LayoutDashboard, label: 'Dashboard' },
-    { path: '/accounts', icon: Users, label: 'Cuentas' },
-    { path: '/upload', icon: Upload, label: 'Subir Video' },
-    { path: '/distribution', icon: Share2, label: 'Distribución' },
-    { path: '/analytics', icon: BarChart3, label: 'Estadísticas' },
+    { path: '/upload', icon: Upload, label: 'Create Post' },
+    { path: '/analytics', icon: BarChart3, label: 'Analytics' },
 ];
 
 export const MainLayout: React.FC = () => {

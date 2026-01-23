@@ -1,54 +1,53 @@
 import { motion } from 'framer-motion';
 import {
     TrendingUp,
-    Users,
     Video,
     Eye,
     Heart,
     MessageCircle,
     Share2,
-    ArrowUpRight
+    ArrowUpRight,
+    Calendar,
+    Clock
 } from 'lucide-react';
 import { Card, CardHeader, CardContent } from '../components/ui';
 import './Dashboard.css';
 
-// Mock data - will be replaced with real data from Supabase
+// Demo data for TikTok approval
 const mockStats = {
-    total_accounts: 12,
-    active_accounts: 10,
-    total_videos: 45,
-    total_distributions: 540,
-    total_views: 12500000,
-    total_likes: 890000,
-    total_comments: 45000,
-    total_shares: 23000,
+    total_videos: 8,
+    scheduled_posts: 3,
+    total_views: 45200,
+    total_likes: 3890,
+    total_comments: 245,
+    total_shares: 89,
 };
 
 const statCards = [
     {
-        label: 'Cuentas Activas',
-        value: mockStats.active_accounts,
-        total: mockStats.total_accounts,
-        icon: Users,
-        color: '#6366f1'
-    },
-    {
-        label: 'Videos Subidos',
+        label: 'Videos Publicados',
         value: mockStats.total_videos,
         icon: Video,
         color: '#8b5cf6'
     },
     {
-        label: 'Distribuciones',
-        value: mockStats.total_distributions,
-        icon: Share2,
-        color: '#f472b6'
+        label: 'Programados',
+        value: mockStats.scheduled_posts,
+        icon: Calendar,
+        color: '#6366f1'
     },
     {
         label: 'Vistas Totales',
         value: mockStats.total_views,
         icon: Eye,
         color: '#22c55e',
+        format: true
+    },
+    {
+        label: 'Me Gusta',
+        value: mockStats.total_likes,
+        icon: Heart,
+        color: '#ef4444',
         format: true
     },
 ];
@@ -73,8 +72,8 @@ export const Dashboard: React.FC = () => {
                 initial={{ opacity: 0, y: -20 }}
                 animate={{ opacity: 1, y: 0 }}
             >
-                <h1 className="page-title">Centro de Mando</h1>
-                <p className="page-subtitle">Vista general del rendimiento de tus cuentas</p>
+                <h1 className="page-title">Dashboard</h1>
+                <p className="page-subtitle">Manage and track your TikTok content performance</p>
             </motion.div>
 
             {/* Stats Grid */}
@@ -97,9 +96,6 @@ export const Dashboard: React.FC = () => {
                                         <span className="stat-value">
                                             {stat.format ? formatNumber(stat.value) : stat.value}
                                         </span>
-                                        {stat.total && (
-                                            <span className="stat-total">/ {stat.total}</span>
-                                        )}
                                     </div>
                                 </div>
                                 <div className="stat-trend positive">
@@ -120,8 +116,8 @@ export const Dashboard: React.FC = () => {
             >
                 <Card>
                     <CardHeader
-                        title="Engagement Total"
-                        subtitle="Métricas de interacción agregadas de todas las cuentas"
+                        title="Content Engagement"
+                        subtitle="Track how your audience interacts with your content"
                     />
                     <CardContent>
                         <div className="engagement-grid">
@@ -150,24 +146,24 @@ export const Dashboard: React.FC = () => {
             >
                 <Card variant="glass">
                     <CardHeader
-                        title="Acciones Rápidas"
-                        subtitle="Accesos directos a funciones principales"
+                        title="Quick Actions"
+                        subtitle="Get started with content creation"
                     />
                     <CardContent>
                         <div className="actions-grid">
                             <a href="/upload" className="action-card">
                                 <Video size={24} />
-                                <span>Subir Video</span>
+                                <span>Create Post</span>
                                 <ArrowUpRight size={16} className="action-arrow" />
                             </a>
-                            <a href="/accounts" className="action-card">
-                                <Users size={24} />
-                                <span>Gestionar Cuentas</span>
+                            <a href="/analytics" className="action-card">
+                                <TrendingUp size={24} />
+                                <span>View Analytics</span>
                                 <ArrowUpRight size={16} className="action-arrow" />
                             </a>
-                            <a href="/distribution" className="action-card">
-                                <Share2 size={24} />
-                                <span>Ver Distribuciones</span>
+                            <a href="/upload" className="action-card">
+                                <Clock size={24} />
+                                <span>Schedule Content</span>
                                 <ArrowUpRight size={16} className="action-arrow" />
                             </a>
                         </div>
@@ -179,3 +175,4 @@ export const Dashboard: React.FC = () => {
 };
 
 export default Dashboard;
+

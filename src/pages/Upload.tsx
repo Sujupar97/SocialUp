@@ -239,13 +239,13 @@ export const Upload: React.FC = () => {
                 >
                     <Card>
                         <CardHeader
-                            title="Descripción Base"
-                            subtitle="Esta descripción se usará como base para generar variaciones únicas"
+                            title="Caption"
+                            subtitle="Write a compelling caption for your TikTok post"
                         />
                         <CardContent>
                             <textarea
                                 className="description-input"
-                                placeholder="Escribe la descripción base del video. La IA generará variaciones únicas para cada cuenta..."
+                                placeholder="Write your video caption here. Add relevant hashtags to increase reach..."
                                 value={description}
                                 onChange={(e) => setDescription(e.target.value)}
                                 rows={5}
@@ -358,10 +358,10 @@ export const Upload: React.FC = () => {
                             onClick={handleSubmit}
                             disabled={!selectedFile || !description}
                         >
-                            Distribuir a Todas las Cuentas
+                            Publish to TikTok
                         </Button>
                         <span className="upload-hint">
-                            El video se duplicará y publicará en 2 cuentas
+                            Your video will be posted to your connected TikTok account
                         </span>
                     </>
                 )}
@@ -372,7 +372,7 @@ export const Upload: React.FC = () => {
                             <div className="progress-container">
                                 <div className="progress-header">
                                     <Loader2 className="spin" size={24} />
-                                    <span className="progress-title">Distribuyendo...</span>
+                                    <span className="progress-title">Publishing...</span>
                                 </div>
                                 <div className="progress-bar-container">
                                     <div
