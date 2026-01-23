@@ -1,0 +1,100 @@
+/* Legal Pages Styles */
+
+.legal-page {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-lg);
+    max-width: 900px;
+    margin: 0 auto;
+}
+
+.legal-icon {
+    width: 64px;
+    height: 64px;
+    background: linear-gradient(135deg, var(--color-primary), var(--color-primary-light));
+    border-radius: var(--radius-lg);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    color: white;
+    margin-bottom: var(--space-md);
+}
+
+.legal-content {
+    padding: var(--space-lg);
+}
+
+.legal-content section {
+    margin-bottom: var(--space-xl);
+    padding-bottom: var(--space-lg);
+    border-bottom: 1px solid var(--color-glass-border);
+}
+
+.legal-content section:last-child {
+    margin-bottom: 0;
+    padding-bottom: 0;
+    border-bottom: none;
+}
+
+.legal-content h2 {
+    font-size: var(--text-xl);
+    font-weight: 600;
+    color: var(--color-text-primary);
+    margin-bottom: var(--space-md);
+}
+
+.legal-content h3 {
+    font-size: var(--text-lg);
+    font-weight: 500;
+    color: var(--color-text-primary);
+    margin: var(--space-md) 0 var(--space-sm);
+}
+
+.legal-content p {
+    color: var(--color-text-secondary);
+    line-height: 1.7;
+    margin-bottom: var(--space-md);
+}
+
+.legal-content ul {
+    margin: var(--space-sm) 0 var(--space-md) var(--space-lg);
+    padding: 0;
+}
+
+.legal-content li {
+    color: var(--color-text-secondary);
+    line-height: 1.6;
+    margin-bottom: var(--space-xs);
+}
+
+.legal-content a {
+    color: var(--color-primary-light);
+    text-decoration: none;
+    transition: color var(--transition-fast);
+}
+
+.legal-content a:hover {
+    color: var(--color-primary);
+    text-decoration: underline;
+}
+
+/* Footer legal links */
+.legal-footer {
+    display: flex;
+    justify-content: center;
+    gap: var(--space-lg);
+    padding: var(--space-lg) 0;
+    margin-top: auto;
+    border-top: 1px solid var(--color-glass-border);
+}
+
+.legal-footer a {
+    color: var(--color-text-muted);
+    font-size: var(--text-sm);
+    text-decoration: none;
+    transition: color var(--transition-fast);
+}
+
+.legal-footer a:hover {
+    color: var(--color-text-primary);
+}

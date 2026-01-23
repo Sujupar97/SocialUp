@@ -1,0 +1,38 @@
+{
+  "name": "contenthub-scripts",
+  "version": "1.0.0",
+  "description": "Scripts de automatización para ContentHub",
+  "main": "orchestrator.ts",
+  "scripts": {
+    "process-video": "ts-node video-processor.ts",
+    "generate-descriptions": "ts-node description-generator.ts",
+    "publish-tiktok": "ts-node tiktok-publisher.ts",
+    "distribute": "ts-node orchestrator.ts",
+    "test": "echo \"Use: npm run distribute <video_path> <description>\""
+  },
+  "keywords": [
+    "contenthub",
+    "tiktok",
+    "automation"
+  ],
+  "author": "ContentHub",
+  "license": "MIT",
+  "dependencies": {
+    "@google/generative-ai": "^0.21.0",
+    "@types/cors": "^2.8.19",
+    "@types/express": "^5.0.6",
+    "@types/multer": "^2.0.0",
+    "cors": "^2.8.5",
+    "express": "^5.2.1",
+    "multer": "^2.0.2",
+    "playwright": "^1.48.0",
+    "uuid": "^11.0.0"
+  },
+  "devDependencies": {
+    "@types/node": "^22.0.0",
+    "@types/uuid": "^10.0.0",
+    "dotenv": "^16.4.0",
+    "ts-node": "^10.9.0",
+    "typescript": "^5.6.0"
+  }
+}
