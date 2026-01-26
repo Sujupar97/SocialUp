@@ -1,10 +1,8 @@
-// import { supabase } from './supabase';
+import { supabase } from './supabase';
 
 const TIKTOK_CLIENT_KEY = 'awz6klemqb5wxgsh';
-// En producción, esto debería ser la URL de tu sitio desplegado
-const REDIRECT_URI = window.location.hostname === 'localhost'
-    ? 'http://localhost:5173'
-    : 'https://socialfullup.netlify.app';
+// Usar dinámicamente el origen actual + ruta de cuentas
+const REDIRECT_URI = `${window.location.origin}/accounts`;
 
 const SCOPES = 'user.info.basic,video.publish,video.upload';
 
@@ -25,22 +23,21 @@ export const initiateTikTokAuth = () => {
 
 export const handleAuthCallback = async (code: string) => {
     try {
-        // En un entorno profesional, aquí llamaríamos a nuestro backend (N8N o Edge Function)
-        // para intercambiar el código por el token usando el Client Secret.
-        // Por ahora, simularemos que enviamos esto a procesar.
+        console.log('Intercambiando código por token vía Edge Function...');
 
-        console.log('Procesando código de autorización:', code);
+        const { data, error } = await supabase.functions.invoke('tiktok-auth', {
+            body: {
+                code,
+                redirect_uri: REDIRECT_URI
+            }
+        });
 
-        // TODO: Llamar al webhook de N8N que hará el intercambio seguro
-        // const response = await fetch('YOUR_N8N_WEBHOOK_URL', {
-        //     method: 'POST',
-        //     body: JSON.stringify({ code })
-        // });
+        if (error) throw error;
 
-        // Simulación de éxito para UX
-        return { success: true };
+        console.log('Autenticación exitosa:', data);
+        return { success: true, data };
     } catch (error) {
         console.error('Error en autenticación:', error);
-        return { success: false, error };
+        throw error;
     }
 };
