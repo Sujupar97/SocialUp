@@ -1,4 +1,4 @@
-import { useEffect } from 'react';
+import { useEffect, useState } from 'react';
 import { useNavigate, useSearchParams } from 'react-router-dom';
 import { motion } from 'framer-motion';
 import {
@@ -10,55 +10,13 @@ import {
     Share2,
     ArrowUpRight,
     Calendar,
-    Clock
+    Clock,
+    Loader2
 } from 'lucide-react';
 import { Card, CardHeader, CardContent } from '../components/ui';
+import { getDashboardStats } from '../services/analytics';
+import type { DashboardStats } from '../types';
 import './Dashboard.css';
-
-// Demo data for TikTok approval
-const mockStats = {
-    total_videos: 8,
-    scheduled_posts: 3,
-    total_views: 45200,
-    total_likes: 3890,
-    total_comments: 245,
-    total_shares: 89,
-};
-
-const statCards = [
-    {
-        label: 'Videos Publicados',
-        value: mockStats.total_videos,
-        icon: Video,
-        color: '#8b5cf6'
-    },
-    {
-        label: 'Programados',
-        value: mockStats.scheduled_posts,
-        icon: Calendar,
-        color: '#6366f1'
-    },
-    {
-        label: 'Vistas Totales',
-        value: mockStats.total_views,
-        icon: Eye,
-        color: '#22c55e',
-        format: true
-    },
-    {
-        label: 'Me Gusta',
-        value: mockStats.total_likes,
-        icon: Heart,
-        color: '#ef4444',
-        format: true
-    },
-];
-
-const engagementCards = [
-    { label: 'Likes', value: mockStats.total_likes, icon: Heart, color: '#ef4444' },
-    { label: 'Comentarios', value: mockStats.total_comments, icon: MessageCircle, color: '#3b82f6' },
-    { label: 'Compartidos', value: mockStats.total_shares, icon: Share2, color: '#8b5cf6' },
-];
 
 function formatNumber(num: number): string {
     if (num >= 1000000) return (num / 1000000).toFixed(1) + 'M';
@@ -69,17 +27,94 @@ function formatNumber(num: number): string {
 export const Dashboard: React.FC = () => {
     const [searchParams] = useSearchParams();
     const navigate = useNavigate();
+    const [stats, setStats] = useState<DashboardStats>({
+        total_accounts: 0,
+        active_accounts: 0,
+        total_videos: 0,
+        total_distributions: 0,
+        total_views: 0,
+        total_likes: 0,
+        total_comments: 0,
+        total_shares: 0,
+    });
+    const [loading, setLoading] = useState(true);
 
     useEffect(() => {
-        // Si detectamos un código de auth en la raíz (redirección de TikTok),
-        // lo pasamos a la página de cuentas que maneja el proceso
+        // Auth redirection handling
         if (searchParams.get('code')) {
             navigate({
                 pathname: '/accounts',
                 search: searchParams.toString()
             });
+            return;
         }
+
+        // Fetch real dashboard stats
+        const loadStats = async () => {
+            try {
+                const data = await getDashboardStats();
+                setStats(data || {
+                    total_accounts: 0,
+                    active_accounts: 0,
+                    total_videos: 0,
+                    total_distributions: 0,
+                    total_views: 0,
+                    total_likes: 0,
+                    total_comments: 0,
+                    total_shares: 0,
+                });
+            } catch (error) {
+                console.error('Error loading dashboard stats:', error);
+            } finally {
+                setLoading(false);
+            }
+        };
+
+        loadStats();
     }, [searchParams, navigate]);
+
+    const statCards = [
+        {
+            label: 'Videos Publicados',
+            value: stats.total_distributions, // Using distributions as proxy for published
+            icon: Video,
+            color: '#8b5cf6'
+        },
+        {
+            label: 'Cuentas Activas',
+            value: stats.active_accounts,
+            icon: Calendar, // Using Calendar icon for now, or maybe Users
+            color: '#6366f1'
+        },
+        {
+            label: 'Vistas Totales',
+            value: stats.total_views,
+            icon: Eye,
+            color: '#22c55e',
+            format: true
+        },
+        {
+            label: 'Me Gusta',
+            value: stats.total_likes,
+            icon: Heart,
+            color: '#ef4444',
+            format: true
+        },
+    ];
+
+    const engagementCards = [
+        { label: 'Likes', value: stats.total_likes, icon: Heart, color: '#ef4444' },
+        { label: 'Comentarios', value: stats.total_comments, icon: MessageCircle, color: '#3b82f6' },
+        { label: 'Compartidos', value: stats.total_shares, icon: Share2, color: '#8b5cf6' },
+    ];
+
+    if (loading) {
+        return (
+            <div className="dashboard-loading">
+                <Loader2 className="spinning" size={40} />
+            </div>
+        );
+    }
 
     return (
         <div className="dashboard">
@@ -114,10 +149,7 @@ export const Dashboard: React.FC = () => {
                                         </span>
                                     </div>
                                 </div>
-                                <div className="stat-trend positive">
-                                    <TrendingUp size={16} />
-                                    <span>+12%</span>
-                                </div>
+                                {/* Trend removed as we don't calculate it yet */}
                             </div>
                         </Card>
                     </motion.div>
@@ -175,11 +207,6 @@ export const Dashboard: React.FC = () => {
                             <a href="/analytics" className="action-card">
                                 <TrendingUp size={24} />
                                 <span>View Analytics</span>
-                                <ArrowUpRight size={16} className="action-arrow" />
-                            </a>
-                            <a href="/upload" className="action-card">
-                                <Clock size={24} />
-                                <span>Schedule Content</span>
                                 <ArrowUpRight size={16} className="action-arrow" />
                             </a>
                         </div>

@@ -1,66 +1,10 @@
+import { useEffect, useState } from 'react';
 import { motion } from 'framer-motion';
 import { Clock, CheckCircle, XCircle, Loader2 } from 'lucide-react';
 import { Card, CardHeader, CardContent } from '../components/ui';
+import { getVideoCopies } from '../services/content';
 import type { VideoCopy } from '../types';
 import './Distribution.css';
-
-// Mock data
-const mockDistributions: VideoCopy[] = [
-    {
-        id: '1',
-        video_id: 'v1',
-        account_id: 'a1',
-        copy_filename: 'video_01_a1_1705312200.mp4',
-        storage_path: '/videos/copies/video_01_a1_1705312200.mp4',
-        generated_description: 'Descubre cómo transformar tu vida con estos tips 🚀 #emprendimiento #exito',
-        status: 'published',
-        published_at: '2024-01-15T10:30:00Z',
-        external_post_id: '7326485920',
-        error_message: null,
-        created_at: '2024-01-15T10:00:00Z',
-        account: {
-            username: 'julianparra_01',
-            platform: 'tiktok',
-            profile_photo_url: null,
-        },
-    },
-    {
-        id: '2',
-        video_id: 'v1',
-        account_id: 'a2',
-        copy_filename: 'video_01_a2_1705312201.mp4',
-        storage_path: '/videos/copies/video_01_a2_1705312201.mp4',
-        generated_description: 'Los secretos del éxito que nadie te cuenta 💡 #motivacion #crecimiento',
-        status: 'publishing',
-        published_at: null,
-        external_post_id: null,
-        error_message: null,
-        created_at: '2024-01-15T10:00:00Z',
-        account: {
-            username: 'julianparra_02',
-            platform: 'tiktok',
-            profile_photo_url: null,
-        },
-    },
-    {
-        id: '3',
-        video_id: 'v1',
-        account_id: 'a3',
-        copy_filename: 'video_01_a3_1705312202.mp4',
-        storage_path: '/videos/copies/video_01_a3_1705312202.mp4',
-        generated_description: null,
-        status: 'pending',
-        published_at: null,
-        external_post_id: null,
-        error_message: null,
-        created_at: '2024-01-15T10:00:00Z',
-        account: {
-            username: 'julianparra_03',
-            platform: 'tiktok',
-            profile_photo_url: null,
-        },
-    },
-];
 
 const statusConfig = {
     pending: { icon: Clock, color: '#f59e0b', label: 'Pendiente' },
@@ -70,13 +14,41 @@ const statusConfig = {
 };
 
 export const Distribution: React.FC = () => {
+    const [distributions, setDistributions] = useState<VideoCopy[]>([]);
+    const [loading, setLoading] = useState(true);
+
+    useEffect(() => {
+        const loadData = async () => {
+            try {
+                const data = await getVideoCopies();
+                setDistributions(data);
+            } catch (error) {
+                console.error('Error loading distributions:', error);
+            } finally {
+                setLoading(false);
+            }
+        };
+
+        loadData();
+    }, []);
+
     const stats = {
-        total: mockDistributions.length,
-        published: mockDistributions.filter(d => d.status === 'published').length,
-        publishing: mockDistributions.filter(d => d.status === 'publishing').length,
-        pending: mockDistributions.filter(d => d.status === 'pending').length,
-        failed: mockDistributions.filter(d => d.status === 'failed').length,
+        total: distributions.length,
+        published: distributions.filter(d => d.status === 'published').length,
+        publishing: distributions.filter(d => d.status === 'publishing').length,
+        pending: distributions.filter(d => d.status === 'pending').length,
+        failed: distributions.filter(d => d.status === 'failed').length,
     };
+
+    if (loading) {
+        return (
+            <div className="distribution-page">
+                <div className="loading-container">
+                    <Loader2 className="spinning" size={40} />
+                </div>
+            </div>
+        );
+    }
 
     return (
         <div className="distribution-page">
@@ -105,11 +77,11 @@ export const Distribution: React.FC = () => {
                             <div className="progress-bar">
                                 <div
                                     className="progress-fill published"
-                                    style={{ width: `${(stats.published / stats.total) * 100}%` }}
+                                    style={{ width: stats.total > 0 ? `${(stats.published / stats.total) * 100}%` : '0%' }}
                                 />
                                 <div
                                     className="progress-fill publishing"
-                                    style={{ width: `${(stats.publishing / stats.total) * 100}%` }}
+                                    style={{ width: stats.total > 0 ? `${(stats.publishing / stats.total) * 100}%` : '0%' }}
                                 />
                             </div>
                             <div className="progress-legend">
@@ -144,44 +116,50 @@ export const Distribution: React.FC = () => {
                     />
                     <CardContent className="no-padding">
                         <div className="distribution-list">
-                            {mockDistributions.map((dist, index) => {
-                                const config = statusConfig[dist.status];
-                                const StatusIcon = config.icon;
+                            {distributions.length === 0 ? (
+                                <div className="empty-distributions">
+                                    <p>No hay distribuciones registradas aún.</p>
+                                </div>
+                            ) : (
+                                distributions.map((dist, index) => {
+                                    const config = statusConfig[dist.status] || statusConfig.pending;
+                                    const StatusIcon = config.icon;
 
-                                return (
-                                    <motion.div
-                                        key={dist.id}
-                                        className="distribution-item"
-                                        initial={{ opacity: 0, x: -20 }}
-                                        animate={{ opacity: 1, x: 0 }}
-                                        transition={{ delay: 0.3 + index * 0.1 }}
-                                    >
-                                        <div className="dist-account">
-                                            <div className="dist-avatar">
-                                                {dist.account?.username[0].toUpperCase()}
+                                    return (
+                                        <motion.div
+                                            key={dist.id}
+                                            className="distribution-item"
+                                            initial={{ opacity: 0, x: -20 }}
+                                            animate={{ opacity: 1, x: 0 }}
+                                            transition={{ delay: 0.3 + index * 0.1 }}
+                                        >
+                                            <div className="dist-account">
+                                                <div className="dist-avatar">
+                                                    {dist.account?.username?.[0]?.toUpperCase() || '?'}
+                                                </div>
+                                                <div className="dist-account-info">
+                                                    <span className="dist-username">@{dist.account?.username || 'Desconocido'}</span>
+                                                    <span className="dist-platform">{dist.account?.platform || 'tiktok'}</span>
+                                                </div>
                                             </div>
-                                            <div className="dist-account-info">
-                                                <span className="dist-username">@{dist.account?.username}</span>
-                                                <span className="dist-platform">{dist.account?.platform}</span>
+
+                                            <div className="dist-description">
+                                                {dist.generated_description ||
+                                                    <span className="pending-text">Generando descripción...</span>
+                                                }
                                             </div>
-                                        </div>
 
-                                        <div className="dist-description">
-                                            {dist.generated_description ||
-                                                <span className="pending-text">Generando descripción...</span>
-                                            }
-                                        </div>
-
-                                        <div className="dist-status" style={{ color: config.color }}>
-                                            <StatusIcon
-                                                size={18}
-                                                className={dist.status === 'publishing' ? 'spinning' : ''}
-                                            />
-                                            <span>{config.label}</span>
-                                        </div>
-                                    </motion.div>
-                                );
-                            })}
+                                            <div className="dist-status" style={{ color: config.color }}>
+                                                <StatusIcon
+                                                    size={18}
+                                                    className={dist.status === 'publishing' ? 'spinning' : ''}
+                                                />
+                                                <span>{config.label}</span>
+                                            </div>
+                                        </motion.div>
+                                    );
+                                })
+                            )}
                         </div>
                     </CardContent>
                 </Card>

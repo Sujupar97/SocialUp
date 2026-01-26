@@ -243,6 +243,13 @@ button {
     margin-bottom: var(--space-md);
 }
 
-.mb-lg {
-    margin-bottom: var(--space-lg);
+/* Animations */
+@keyframes spin {
+    to {
+        transform: rotate(360deg);
+    }
+}
+
+.spinning {
+    animation: spin 1s linear infinite;
 }

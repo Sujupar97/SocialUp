@@ -1,26 +1,65 @@
+import { useEffect, useState } from 'react';
 import { motion } from 'framer-motion';
-import { Eye, Heart, MessageCircle, Share2, TrendingUp, Video, Calendar } from 'lucide-react';
+import { Eye, Heart, MessageCircle, Share2, TrendingUp, Video, Calendar, Loader2 } from 'lucide-react';
 import { Card, CardHeader, CardContent } from '../components/ui';
 import { formatNumber } from '../utils/helpers';
+import { getDashboardStats } from '../services/analytics';
+import type { DashboardStats } from '../types';
 import './Analytics.css';
 
-// Simplified data for TikTok approval (single account view)
-const contentStats = {
-    totalViews: 45200,
-    totalLikes: 3890,
-    totalComments: 245,
-    totalShares: 89,
-    postsThisMonth: 8,
-    avgEngagement: 8.37
-};
-
-const recentPosts = [
-    { id: 1, title: 'Morning Routine Tips', views: 12400, likes: 980, date: '2 days ago' },
-    { id: 2, title: 'Product Review', views: 8900, likes: 720, date: '4 days ago' },
-    { id: 3, title: 'Travel Vlog', views: 15200, likes: 1240, date: '1 week ago' },
-];
-
 export const Analytics: React.FC = () => {
+    const [stats, setStats] = useState<DashboardStats>({
+        total_accounts: 0,
+        active_accounts: 0,
+        total_videos: 0,
+        total_distributions: 0,
+        total_views: 0,
+        total_likes: 0,
+        total_comments: 0,
+        total_shares: 0,
+    });
+    const [loading, setLoading] = useState(true);
+
+    useEffect(() => {
+        const loadStats = async () => {
+            try {
+                const data = await getDashboardStats();
+                setStats(data || {
+                    total_accounts: 0,
+                    active_accounts: 0,
+                    total_videos: 0,
+                    total_distributions: 0,
+                    total_views: 0,
+                    total_likes: 0,
+                    total_comments: 0,
+                    total_shares: 0,
+                });
+            } catch (error) {
+                console.error('Error loading analytics:', error);
+            } finally {
+                setLoading(false);
+            }
+        };
+
+        loadStats();
+    }, []);
+
+    // Calculated engagement rate (simple approximation)
+    const totalInteractions = stats.total_likes + stats.total_comments + stats.total_shares;
+    const engagementRate = stats.total_views > 0
+        ? ((totalInteractions / stats.total_views) * 100).toFixed(2)
+        : '0.00';
+
+    if (loading) {
+        return (
+            <div className="analytics-page">
+                <div className="loading-container">
+                    <Loader2 className="spinning" size={40} />
+                </div>
+            </div>
+        );
+    }
+
     return (
         <div className="analytics-page">
             <motion.div
@@ -35,10 +74,10 @@ export const Analytics: React.FC = () => {
             {/* Summary Cards */}
             <div className="analytics-summary">
                 {[
-                    { label: 'Total Views', value: contentStats.totalViews, icon: Eye, color: '#22c55e' },
-                    { label: 'Total Likes', value: contentStats.totalLikes, icon: Heart, color: '#ef4444' },
-                    { label: 'Comments', value: contentStats.totalComments, icon: MessageCircle, color: '#3b82f6' },
-                    { label: 'Shares', value: contentStats.totalShares, icon: Share2, color: '#8b5cf6' },
+                    { label: 'Total Views', value: stats.total_views, icon: Eye, color: '#22c55e' },
+                    { label: 'Total Likes', value: stats.total_likes, icon: Heart, color: '#ef4444' },
+                    { label: 'Comments', value: stats.total_comments, icon: MessageCircle, color: '#3b82f6' },
+                    { label: 'Shares', value: stats.total_shares, icon: Share2, color: '#8b5cf6' },
                 ].map((item, index) => (
                     <motion.div
                         key={item.label}
@@ -74,64 +113,30 @@ export const Analytics: React.FC = () => {
                                 <TrendingUp size={28} />
                             </div>
                             <div className="engagement-data">
-                                <span className="engagement-value">{contentStats.avgEngagement}%</span>
+                                <span className="engagement-value">{engagementRate}%</span>
                                 <span className="engagement-label">Average Engagement Rate</span>
-                            </div>
-                            <div className="engagement-trend positive">
-                                +2.5% vs last week
                             </div>
                         </div>
                     </CardContent>
                 </Card>
             </motion.div>
 
-            {/* Content Performance */}
+            {/* Content Performance - Simplified for now as we transition from mock data */}
             <motion.div
                 initial={{ opacity: 0, y: 20 }}
                 animate={{ opacity: 1, y: 0 }}
                 transition={{ delay: 0.5 }}
+                className="mt-6"
             >
                 <Card>
                     <CardHeader
                         title="Recent Content Performance"
-                        subtitle="See how your latest posts are performing"
+                        subtitle="Detailed post analytics coming soon"
                     />
-                    <CardContent className="no-padding">
-                        <div className="analytics-table">
-                            <div className="table-header">
-                                <span>Content</span>
-                                <span>Views</span>
-                                <span>Likes</span>
-                                <span>Posted</span>
-                            </div>
-                            {recentPosts.map((post, index) => (
-                                <motion.div
-                                    key={post.id}
-                                    className="table-row"
-                                    initial={{ opacity: 0, x: -20 }}
-                                    animate={{ opacity: 1, x: 0 }}
-                                    transition={{ delay: 0.6 + index * 0.1 }}
-                                >
-                                    <span className="account-cell">
-                                        <div className="account-avatar-sm" style={{ background: '#8b5cf6' }}>
-                                            <Video size={14} />
-                                        </div>
-                                        {post.title}
-                                    </span>
-                                    <span className="metric-cell">
-                                        <Eye size={14} />
-                                        {formatNumber(post.views)}
-                                    </span>
-                                    <span className="metric-cell">
-                                        <Heart size={14} />
-                                        {formatNumber(post.likes)}
-                                    </span>
-                                    <span className="metric-cell">
-                                        <Calendar size={14} />
-                                        {post.date}
-                                    </span>
-                                </motion.div>
-                            ))}
+                    <CardContent>
+                        <div className="text-center py-8 text-gray-500">
+                            <Video size={48} className="mx-auto mb-4 opacity-50" />
+                            <p>Connect accounts and publish videos to see detailed performance data.</p>
                         </div>
                     </CardContent>
                 </Card>
