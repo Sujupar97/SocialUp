@@ -1,3 +1,5 @@
+import { useEffect } from 'react';
+import { useNavigate, useSearchParams } from 'react-router-dom';
 import { motion } from 'framer-motion';
 import {
     TrendingUp,
@@ -65,6 +67,20 @@ function formatNumber(num: number): string {
 }
 
 export const Dashboard: React.FC = () => {
+    const [searchParams] = useSearchParams();
+    const navigate = useNavigate();
+
+    useEffect(() => {
+        // Si detectamos un código de auth en la raíz (redirección de TikTok),
+        // lo pasamos a la página de cuentas que maneja el proceso
+        if (searchParams.get('code')) {
+            navigate({
+                pathname: '/accounts',
+                search: searchParams.toString()
+            });
+        }
+    }, [searchParams, navigate]);
+
     return (
         <div className="dashboard">
             <motion.div
@@ -175,4 +191,3 @@ export const Dashboard: React.FC = () => {
 };
 
 export default Dashboard;
-
