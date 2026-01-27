@@ -1,13 +1,14 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import { useSearchParams } from 'react-router-dom';
-import { motion } from 'framer-motion';
-import { MoreVertical, Check, X, Loader2, AlertCircle } from 'lucide-react';
+import { motion, AnimatePresence } from 'framer-motion';
+import { MoreVertical, Check, X, Loader2, AlertCircle, Trash2 } from 'lucide-react';
 import { Card, Button } from '../components/ui';
-import { getAccounts, toggleAccountStatus } from '../services/accounts';
+import { getAccounts, toggleAccountStatus, deleteAccount } from '../services/accounts';
 import { initiateTikTokAuth, handleAuthCallback } from '../services/tiktokAuth';
 import type { Account } from '../types';
 import './Accounts.css';
 
+// ... (Icons remain same)
 const TikTokIcon = () => (
     <svg width="20" height="20" viewBox="0 0 24 24" fill="currentColor">
         <path d="M19.59 6.69a4.83 4.83 0 0 1-3.77-4.25V2h-3.45v13.67a2.89 2.89 0 0 1-5.2 1.74 2.89 2.89 0 0 1 2.31-4.64 2.93 2.93 0 0 1 .88.13V9.4a6.84 6.84 0 0 0-1-.05A6.33 6.33 0 0 0 5 20.1a6.34 6.34 0 0 0 10.86-4.43v-7a8.16 8.16 0 0 0 4.77 1.52v-3.4a4.85 4.85 0 0 1-1-.1z" />
@@ -25,13 +26,26 @@ export const Accounts: React.FC = () => {
     const [loading, setLoading] = useState(true);
     const [processingAuth, setProcessingAuth] = useState(false);
     const [error, setError] = useState<string | null>(null);
+    const [openMenuId, setOpenMenuId] = useState<string | null>(null);
+    const menuRef = useRef<HTMLDivElement>(null);
     const [searchParams] = useSearchParams();
+
+    // Close menu when clicking outside
+    useEffect(() => {
+        const handleClickOutside = (event: MouseEvent) => {
+            if (menuRef.current && !menuRef.current.contains(event.target as Node)) {
+                setOpenMenuId(null);
+            }
+        };
+
+        document.addEventListener('mousedown', handleClickOutside);
+        return () => document.removeEventListener('mousedown', handleClickOutside);
+    }, []);
 
     // Cargar cuentas y verificar callback de OAuth
     useEffect(() => {
         const checkAuthAndLoad = async () => {
             const code = searchParams.get('code');
-            // const state = searchParams.get('state'); // TODO: Validar state posteriormente
 
             if (code) {
                 setProcessingAuth(true);
@@ -40,7 +54,6 @@ export const Accounts: React.FC = () => {
 
                 try {
                     await handleAuthCallback(code);
-                    // Recargar cuentas después de la autenticación exitosa
                     await loadAccounts();
                 } catch (err) {
                     setError('Error conectando con TikTok');
@@ -81,6 +94,47 @@ export const Accounts: React.FC = () => {
             console.error('Error toggling status:', err);
         }
     };
+
+    const handleDeleteAccount = async (id: string) => {
+        if (!confirm('¿Estás seguro de que quieres eliminar esta cuenta?')) return;
+
+        try {
+            await deleteAccount(id);
+            setAccounts(prev => prev.filter(a => a.id !== id));
+            setOpenMenuId(null);
+        } catch (err) {
+            console.error('Error deleting account:', err);
+            setError('Error al eliminar cuenta');
+        }
+    };
+
+    if (loading && !processingAuth && accounts.length === 0) {
+        return (
+            <div className="accounts-page">
+                <div className="loading-state">
+                    <Loader2 size={40} className="spinning" />
+                    <p>Cargando cuentas...</p>
+                </div>
+            </div>
+        );
+    }
+
+    // ... (rest of the code is largely same, just updating the map in next chunk if needed or here)
+    // Wait, the ReplacementContent must match TargetContent which is huge. It's safer to use smaller chunks.
+    // But since I need to add state and rewrite Imports, I might as well replace the top of the file.
+    // I need to be careful with the target content.
+
+    // No, I'll do this in 2 chunks.
+    // Chunk 1: Imports and component start definition (state)
+    // Chunk 2: The handle functions and UseEffects
+    // Chunk 3: The JSX inside map (if needed to add menu)
+
+    // Oh wait, the tool call above asks for one big replacement. I should split it if I can't match easily.
+    // I will try to replace the IMPORTS + COMPONENT BODY up to `handleToggleStatus` first.
+
+    // Actually, I can use a simpler approach. Just replace lines 1-190 if I really want to rewrite it all.
+    // The previous view showed up to line 200. I can replace almost the whole file top half.
+
 
     if (loading && !processingAuth && accounts.length === 0) {
         return (
@@ -173,9 +227,38 @@ export const Accounts: React.FC = () => {
                                             {account.platform === 'tiktok' ? <TikTokIcon /> : <InstagramIcon />}
                                         </div>
                                     </div>
-                                    <button className="account-menu">
-                                        <MoreVertical size={18} />
-                                    </button>
+                                    <div className="relative" ref={openMenuId === account.id ? menuRef : null}>
+                                        <button
+                                            className="account-menu"
+                                            onClick={(e) => {
+                                                e.stopPropagation();
+                                                setOpenMenuId(openMenuId === account.id ? null : account.id);
+                                            }}
+                                        >
+                                            <MoreVertical size={18} />
+                                        </button>
+                                        <AnimatePresence>
+                                            {openMenuId === account.id && (
+                                                <motion.div
+                                                    initial={{ opacity: 0, scale: 0.95 }}
+                                                    animate={{ opacity: 1, scale: 1 }}
+                                                    exit={{ opacity: 0, scale: 0.95 }}
+                                                    className="absolute right-0 mt-2 w-48 bg-[#1A1D21] border border-[#2A2E35] rounded-lg shadow-lg z-50 overflow-hidden"
+                                                >
+                                                    <button
+                                                        onClick={(e) => {
+                                                            e.stopPropagation();
+                                                            handleDeleteAccount(account.id);
+                                                        }}
+                                                        className="w-full px-4 py-2 text-left text-sm text-red-400 hover:bg-red-500/10 flex items-center gap-2 transition-colors"
+                                                    >
+                                                        <Trash2 size={14} />
+                                                        Desconectar Cuenta
+                                                    </button>
+                                                </motion.div>
+                                            )}
+                                        </AnimatePresence>
+                                    </div>
                                 </div>
 
                                 <div className="account-info">
