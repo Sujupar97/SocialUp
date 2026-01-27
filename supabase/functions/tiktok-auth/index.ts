@@ -5,7 +5,7 @@ console.log("TikTok Auth Function Up!")
 
 const corsHeaders = {
     'Access-Control-Allow-Origin': '*',
-    'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type',
+    'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type, x-supabase-client-platform',
 }
 
 serve(async (req) => {
@@ -67,8 +67,7 @@ serve(async (req) => {
 
         console.log('User info fetched:', userData.username)
 
-        // 3. Save to Supabase
-        // Edge Functions have SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY automatically set
+        // 3. Save to Supabase (With Strict Error Handling)
         const supabaseClient = createClient(
             Deno.env.get('SUPABASE_URL') ?? '',
             Deno.env.get('SUPABASE_SERVICE_ROLE_KEY') ?? ''
@@ -76,6 +75,8 @@ serve(async (req) => {
 
         const now = new Date()
         const expiresAt = new Date(now.getTime() + (expires_in * 1000))
+
+        console.log('Upserting account to DB...')
 
         const { data: account, error: upsertError } = await supabaseClient
             .from('accounts')
@@ -86,38 +87,22 @@ serve(async (req) => {
                 refresh_token: refresh_token,
                 token_type: token_type,
                 scope: scope,
-                expires_ai: expires_in, // Typo in migration? No, column is expires_in. Check migration 005
                 expires_at: expiresAt.toISOString(),
                 username: userData.username || 'tiktok_user',
                 display_name: userData.display_name || 'TikTok User',
                 profile_photo_url: userData.avatar_url,
                 is_active: true,
                 updated_at: now.toISOString()
-            }, { onConflict: 'open_id' }) // Assuming we rely on open_id as unique, but schema says PK is UUID. 
-            // We might need to handle onConflict logic better or ensure open_id index is unique.
-            // For now, if we don't have unique constraint on open_id, this upsert might fail or duplicate.
-            // Ideally we should have a unique constraint on open_id. 
-            // Users migration 005 added index but not UNIQUE constraint. 
-            // I'll assume for this turn that we might duplicate if not careful, OR modify sql.
-            // Better: First check if account exists by open_id
+            }, { onConflict: 'open_id' })
             .select()
             .single()
 
-        // Handling the case where open_id constraint is missing:
-        // Actually, let's just Select first.
-        if (!account && upsertError) {
-            // Query by open_id manually if upsert failed due to no constraint
-            const { data: existing } = await supabaseClient.from('accounts').select('id').eq('open_id', open_id).single()
-            if (existing) {
-                await supabaseClient.from('accounts').update({
-                    access_token, refresh_token, expires_at: expiresAt.toISOString(), updated_at: now.toISOString()
-                }).eq('id', existing.id)
-            } else {
-                await supabaseClient.from('accounts').insert({
-                    platform: 'tiktok', open_id, access_token, refresh_token, expires_at: expiresAt.toISOString(), username: userData.username, display_name: userData.display_name, profile_photo_url: userData.avatar_url
-                })
-            }
+        if (upsertError) {
+            console.error('Supabase Upsert Error:', upsertError)
+            throw new Error(`Database Error: ${upsertError.message} (${upsertError.details || ''})`)
         }
+
+        console.log('Account saved successfully:', account?.id)
 
         return new Response(
             JSON.stringify({ success: true, message: 'Account connected' }),
