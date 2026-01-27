@@ -39,6 +39,8 @@ export const Dashboard: React.FC = () => {
     });
     const [loading, setLoading] = useState(true);
 
+
+
     useEffect(() => {
         // Auth redirection handling
         if (searchParams.get('code')) {

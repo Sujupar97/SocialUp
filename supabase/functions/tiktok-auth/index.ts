@@ -14,7 +14,7 @@ serve(async (req) => {
     }
 
     try {
-        const { code, redirect_uri } = await req.json()
+        const { code, redirect_uri, code_verifier } = await req.json()
 
         // Default key from frontend (public), but ideally should also be env var if possible.
         const clientKey = Deno.env.get('TIKTOK_CLIENT_KEY') || 'awz6klemqb5wxgsh'
@@ -39,7 +39,8 @@ serve(async (req) => {
                 client_secret: clientSecret,
                 code: code,
                 grant_type: 'authorization_code',
-                redirect_uri: redirect_uri
+                redirect_uri: redirect_uri,
+                code_verifier: code_verifier
             })
         })
 
