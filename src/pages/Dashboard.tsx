@@ -10,7 +10,6 @@ import {
     Share2,
     ArrowUpRight,
     Calendar,
-    Clock,
     Loader2
 } from 'lucide-react';
 import { Card, CardHeader, CardContent } from '../components/ui';

@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react';
 import { motion } from 'framer-motion';
-import { Eye, Heart, MessageCircle, Share2, TrendingUp, Video, Calendar, Loader2 } from 'lucide-react';
+import { Eye, Heart, MessageCircle, Share2, TrendingUp, Video, Loader2 } from 'lucide-react';
 import { Card, CardHeader, CardContent } from '../components/ui';
 import { formatNumber } from '../utils/helpers';
 import { getDashboardStats } from '../services/analytics';
