@@ -1,0 +1,72 @@
+.cloud-browser-overlay {
+    position: fixed;
+    top: 0;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    background: rgba(0, 0, 0, 0.95);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    z-index: 2000;
+    backdrop-filter: blur(10px);
+    padding: 20px;
+}
+
+.cloud-browser-wrapper {
+    width: 100%;
+    max-width: 1400px;
+    height: 100%;
+    max-height: 900px;
+    display: flex;
+    flex-direction: column;
+    /* Removed background/border on wrapper to let child content float if needed, 
+       but keeping it structurally similar for now */
+    background: #111315;
+    border: 1px solid #2A2E35;
+    border-radius: 12px;
+    box-shadow: 0 0 50px rgba(0, 0, 0, 0.7);
+    overflow: hidden;
+    position: relative;
+}
+
+.browser-header {
+    background: #1A1D21;
+    border-bottom: 1px solid #2A2E35;
+    padding: 12px 16px;
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    flex-shrink: 0;
+    height: 60px;
+}
+
+.browser-content {
+    flex: 1;
+    background: #000;
+    position: relative;
+    overflow: hidden;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+}
+
+/* 
+   The canvas inside browser-content will use 
+   style={{ aspectRatio: '16/9' }} 
+   and object-contain to fit perfectly 
+*/
+
+/* Mobile Adjustments */
+@media (max-width: 768px) {
+    .cloud-browser-overlay {
+        padding: 0;
+    }
+
+    .cloud-browser-wrapper {
+        border-radius: 0;
+        border: none;
+        max-width: none;
+        max-height: none;
+    }
+}

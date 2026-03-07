@@ -2,10 +2,8 @@ import { useState, useRef, useEffect } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { Upload as UploadIcon, Video, X, MessageSquare, AtSign, Send, Loader2, CheckCircle, AlertCircle } from 'lucide-react';
 import { Card, CardHeader, CardContent, Button } from '../components/ui';
-import { CTA_TYPES } from '../utils/constants';
+import { CTA_TYPES, AUTOMATION_SERVER } from '../utils/constants';
 import './Upload.css';
-
-const AUTOMATION_SERVER = 'http://localhost:3001';
 
 type CTAType = 'first_comment' | 'keyword_response' | null;
 type JobStatus = 'idle' | 'uploading' | 'processing' | 'completed' | 'failed';
@@ -131,7 +129,7 @@ export const Upload: React.FC = () => {
             setJob(prev => ({
                 ...prev,
                 status: 'failed',
-                message: error.message || 'Error de conexión. ¿Está el servidor de automatización corriendo? (puerto 3001)'
+                message: error.message || 'Error de conexión. ¿Está el servidor de automatización corriendo?'
             }));
         }
     };
@@ -421,9 +419,9 @@ export const Upload: React.FC = () => {
                                 <div className="error-help">
                                     <p><strong>Verifica que:</strong></p>
                                     <ul>
-                                        <li>El servidor de automatización esté corriendo (puerto 3001)</li>
-                                        <li>CleanVPN esté activado</li>
-                                        <li>Las credenciales de TikTok sean correctas</li>
+                                        <li>El servidor de automatización esté corriendo</li>
+                                        <li>La variable VITE_AUTOMATION_SERVER esté configurada en .env</li>
+                                        <li>Las cuentas de TikTok estén conectadas vía OAuth</li>
                                     </ul>
                                 </div>
                                 <Button onClick={resetForm} variant="secondary" style={{ marginTop: '1rem' }}>

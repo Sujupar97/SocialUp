@@ -1,0 +1,112 @@
+.wizard-overlay {
+    position: fixed;
+    top: 0;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    background: rgba(0, 0, 0, 0.7);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    z-index: 1000;
+    backdrop-filter: blur(5px);
+}
+
+.wizard-modal {
+    background: #1A1D21;
+    border: 1px solid #2A2E35;
+    border-radius: 16px;
+    width: 100%;
+    max-width: 500px;
+    padding: 24px;
+    box-shadow: 0 20px 40px rgba(0, 0, 0, 0.4);
+}
+
+.wizard-header {
+    text-align: center;
+    margin-bottom: 24px;
+}
+
+.wizard-icon {
+    width: 48px;
+    height: 48px;
+    background: rgba(37, 244, 238, 0.1);
+    color: #25F4EE;
+    border-radius: 12px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    margin: 0 auto 16px;
+}
+
+.wizard-title {
+    font-size: 1.25rem;
+    font-weight: 600;
+    color: #fff;
+    margin-bottom: 8px;
+}
+
+.wizard-description {
+    color: #9CA3AF;
+    font-size: 0.9rem;
+    line-height: 1.5;
+}
+
+.wizard-form {
+    display: flex;
+    flex-direction: column;
+    gap: 16px;
+}
+
+.form-group {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+}
+
+.form-label {
+    color: #E5E7EB;
+    font-size: 0.875rem;
+    font-weight: 500;
+}
+
+.form-input {
+    background: #111315;
+    border: 1px solid #2A2E35;
+    border-radius: 8px;
+    padding: 10px 12px;
+    color: #fff;
+    font-size: 0.9rem;
+    transition: all 0.2s;
+}
+
+.form-input:focus {
+    outline: none;
+    border-color: #25F4EE;
+    box-shadow: 0 0 0 2px rgba(37, 244, 238, 0.1);
+}
+
+.wizard-footer {
+    display: flex;
+    gap: 12px;
+    margin-top: 24px;
+    padding-top: 20px;
+    border-top: 1px solid #2A2E35;
+}
+
+.wizard-info-box {
+    background: rgba(37, 244, 238, 0.05);
+    border: 1px solid rgba(37, 244, 238, 0.1);
+    border-radius: 8px;
+    padding: 12px;
+    margin-bottom: 16px;
+    display: flex;
+    gap: 12px;
+    align-items: flex-start;
+}
+
+.wizard-info-text {
+    font-size: 0.85rem;
+    color: #9CA3AF;
+    line-height: 1.4;
+}

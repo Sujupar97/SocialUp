@@ -163,14 +163,12 @@ export async function distributeVideo(options: DistributeOptions): Promise<Distr
     };
 }
 
-// CLI para testing
+// CLI entry point
 if (require.main === module) {
     console.log(`
 ╔══════════════════════════════════════════════════════════════╗
 ║           ContentHub - Sistema de Distribución               ║
 ╚══════════════════════════════════════════════════════════════╝
-
-⚠️  IMPORTANTE: Activa tu VPN (CleanVPN) antes de continuar!
 
 Este script:
 1. Duplica tu video (creando copias únicas)
@@ -180,7 +178,6 @@ Este script:
 Uso: npx ts-node orchestrator.ts <video_path> <descripcion_base>
   `);
 
-    // Para testing, se pueden pasar argumentos o usar valores de prueba
     const videoPath = process.argv[2];
     const baseDescription = process.argv[3];
 
@@ -190,12 +187,6 @@ Uso: npx ts-node orchestrator.ts <video_path> <descripcion_base>
         process.exit(1);
     }
 
-    // Cuentas de prueba (serán reemplazadas por las reales del usuario)
-    const testAccounts: Account[] = [
-        { id: '1', username: 'cuenta1_test', password: 'password1' },
-        { id: '2', username: 'cuenta2_test', password: 'password2' }
-    ];
-
-    console.log('Las cuentas se cargarán desde Supabase en producción.\n');
-    console.log('Para probar, edita las credenciales en este archivo.\n');
+    console.log('Las cuentas se cargan desde Supabase.\n');
+    console.log('Conecta cuentas reales via OAuth antes de ejecutar.\n');
 }

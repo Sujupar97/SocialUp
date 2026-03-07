@@ -14,7 +14,7 @@ serve(async (req) => {
     }
 
     try {
-        const { code, redirect_uri, code_verifier } = await req.json()
+        const { code, redirect_uri, code_verifier, proxy_url, proxy_username, proxy_password, user_id } = await req.json()
 
         // Default key from frontend (public), but ideally should also be env var if possible.
         const clientKey = Deno.env.get('TIKTOK_CLIENT_KEY') || 'awz6klemqb5wxgsh'
@@ -78,22 +78,38 @@ serve(async (req) => {
 
         console.log('Upserting account to DB...')
 
+        // Prepare DB Payload
+        const dbPayload: any = {
+            platform: 'tiktok',
+            open_id: open_id,
+            access_token: access_token,
+            refresh_token: refresh_token,
+            token_type: token_type,
+            scope: scope,
+            expires_at: expiresAt.toISOString(),
+            username: userData.username || 'tiktok_user',
+            display_name: userData.display_name || 'TikTok User',
+            profile_photo_url: userData.avatar_url,
+            is_active: true,
+            updated_at: now.toISOString(),
+            // Proxy Config
+            proxy_url: proxy_url || null,
+            proxy_username: proxy_username || null,
+            proxy_password: proxy_password || null
+        };
+
+        // Only set user_id if provided (owner linkage)
+        // If not provided, it remains whatever it was or null (if new). 
+        // NOTE: upsert replaces fields. If user_id is missing here, we shouldn't overwrite existing user_id with null if row exists.
+        // But edge function doesn't know if row exists easily without querying.
+        // For now, let's assume user_id is passed if available.
+        if (user_id) {
+            dbPayload.user_id = user_id;
+        }
+
         const { data: account, error: upsertError } = await supabaseClient
             .from('accounts')
-            .upsert({
-                platform: 'tiktok',
-                open_id: open_id,
-                access_token: access_token,
-                refresh_token: refresh_token,
-                token_type: token_type,
-                scope: scope,
-                expires_at: expiresAt.toISOString(),
-                username: userData.username || 'tiktok_user',
-                display_name: userData.display_name || 'TikTok User',
-                profile_photo_url: userData.avatar_url,
-                is_active: true,
-                updated_at: now.toISOString()
-            }, { onConflict: 'open_id' })
+            .upsert(dbPayload, { onConflict: 'open_id' })
             .select()
             .single()
 

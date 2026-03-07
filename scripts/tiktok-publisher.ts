@@ -1,8 +1,9 @@
 /**
- * ContentHub - TikTok Publisher
- * Publica videos automáticamente en TikTok usando Playwright
- * 
- * IMPORTANTE: Activa tu VPN (CleanVPN) antes de ejecutar
+ * ContentHub - TikTok Publisher (Legacy - Browser Automation)
+ * Publishes videos via Playwright browser automation.
+ *
+ * DEPRECATED: Use tiktok-api-publisher.ts instead (official API).
+ * This file is kept for warmup/interaction use cases only.
  */
 
 import { chromium, BrowserContext, Page } from 'playwright';

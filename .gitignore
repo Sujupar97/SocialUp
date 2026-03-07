@@ -22,3 +22,14 @@ dist-ssr
 *.njsproj
 *.sln
 *.sw?
+
+# Video files (uploads and processed copies)
+scripts/uploads/
+scripts/processed/
+scripts/sessions/
+*.mp4
+*.mov
+*.avi
+
+# Supabase temp files
+supabase/.temp/

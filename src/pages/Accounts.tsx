@@ -5,6 +5,8 @@ import { MoreVertical, Check, X, Loader2, AlertCircle, Trash2 } from 'lucide-rea
 import { Card, Button } from '../components/ui';
 import { getAccounts, toggleAccountStatus, deleteAccount } from '../services/accounts';
 import { initiateTikTokAuth, handleAuthCallback } from '../services/tiktokAuth';
+import { ConnectionWizard, type ProxyConfig } from '../components/accounts/ConnectionWizard';
+import { CloudBrowser } from '../components/accounts/CloudBrowser';
 import type { Account } from '../types';
 import './Accounts.css';
 
@@ -27,6 +29,8 @@ export const Accounts: React.FC = () => {
     const [processingAuth, setProcessingAuth] = useState(false);
     const [error, setError] = useState<string | null>(null);
     const [openMenuId, setOpenMenuId] = useState<string | null>(null);
+    const [showProxyWizard, setShowProxyWizard] = useState(false);
+    const [viewingAccount, setViewingAccount] = useState<Account | null>(null);
     const menuRef = useRef<HTMLDivElement>(null);
     const [searchParams] = useSearchParams();
 
@@ -83,7 +87,17 @@ export const Accounts: React.FC = () => {
     };
 
     const handleConnectTikTok = () => {
-        initiateTikTokAuth();
+        setShowProxyWizard(true);
+    };
+
+    const handleProxyConnect = (proxyConfig: ProxyConfig | null) => {
+        setShowProxyWizard(false);
+        initiateTikTokAuth(proxyConfig || undefined);
+    };
+
+    const handleViewAccount = (account: Account) => {
+        setViewingAccount(account);
+        setOpenMenuId(null);
     };
 
     const handleToggleStatus = async (id: string, currentStatus: boolean) => {
@@ -248,6 +262,16 @@ export const Accounts: React.FC = () => {
                                                     <button
                                                         onClick={(e) => {
                                                             e.stopPropagation();
+                                                            handleViewAccount(account);
+                                                        }}
+                                                        className="w-full px-4 py-2 text-left text-sm text-gray-300 hover:bg-[#25F4EE]/10 hover:text-[#25F4EE] flex items-center gap-2 transition-colors border-b border-[#2A2E35]"
+                                                    >
+                                                        <span className="w-3.5 h-3.5 rounded-full border border-current flex items-center justify-center text-[10px]">●</span>
+                                                        Ver Navegador Seguro
+                                                    </button>
+                                                    <button
+                                                        onClick={(e) => {
+                                                            e.stopPropagation();
                                                             handleDeleteAccount(account.id);
                                                         }}
                                                         className="w-full px-4 py-2 text-left text-sm text-red-400 hover:bg-red-500/10 flex items-center gap-2 transition-colors"
@@ -311,6 +335,21 @@ export const Accounts: React.FC = () => {
                     </motion.div>
                 )}
             </div>
+
+            <ConnectionWizard
+                isOpen={showProxyWizard}
+                onClose={() => setShowProxyWizard(false)}
+                onConnect={handleProxyConnect}
+            />
+
+            {viewingAccount && (
+                <CloudBrowser
+                    proxyUrl={viewingAccount.proxy_url || ''}
+                    proxyUsername={viewingAccount.proxy_username || undefined}
+                    proxyPassword={viewingAccount.proxy_password || undefined}
+                    onClose={() => setViewingAccount(null)}
+                />
+            )}
         </div>
     );
 };

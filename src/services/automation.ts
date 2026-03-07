@@ -1,14 +1,10 @@
 /**
  * ContentHub - Automation Service
- * Servicio que conecta el frontend con los scripts de automatización
+ * Connects the frontend with the automation backend and Supabase
  */
 
-// URLs de webhooks (se configuran en .env)
-const N8N_WEBHOOKS = {
-    PROCESS_VIDEO: import.meta.env.VITE_N8N_PROCESS_VIDEO || 'http://localhost:5679/webhook/contenthub-process-video',
-    PUBLISH_TIKTOK: import.meta.env.VITE_N8N_PUBLISH_TIKTOK || 'http://localhost:5679/webhook/contenthub-publish-tiktok',
-    GENERATE_DESCRIPTIONS: import.meta.env.VITE_N8N_GENERATE_DESCRIPTIONS || 'http://localhost:5679/webhook/contenthub-generate-descriptions',
-};
+import { supabase } from './supabase';
+import { N8N_WEBHOOKS } from '../utils/constants';
 
 export interface DistributionRequest {
     videoUrl: string;
@@ -33,11 +29,15 @@ export interface DistributionStatus {
 }
 
 /**
- * Inicia el proceso de distribución de un video
+ * Starts the video distribution process
  */
 export async function startDistribution(request: DistributionRequest): Promise<{ jobId: string } | null> {
     try {
-        const response = await fetch(N8N_WEBHOOKS.PROCESS_VIDEO, {
+        if (!N8N_WEBHOOKS.PUBLISH_TIKTOK) {
+            throw new Error('N8N webhook URL not configured. Run initializeConfig() or set VITE_N8N_PUBLISH_TIKTOK in .env');
+        }
+
+        const response = await fetch(N8N_WEBHOOKS.PUBLISH_TIKTOK, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({
@@ -63,31 +63,67 @@ export async function startDistribution(request: DistributionRequest): Promise<{
 }
 
 /**
- * Obtiene el estado de un job de distribución
+ * Gets distribution job status from Supabase (real data)
  */
 export async function getDistributionStatus(jobId: string): Promise<DistributionStatus | null> {
     try {
-        // En producción, esto consultaría Supabase directamente
-        // Por ahora, retornamos un mock
+        // Fetch job from video_processing_jobs
+        const { data: job, error: jobError } = await supabase
+            .from('video_processing_jobs')
+            .select('*')
+            .eq('id', jobId)
+            .single();
+
+        if (jobError || !job) {
+            console.error('Error fetching job:', jobError);
+            return null;
+        }
+
+        // Fetch associated video copies with account info
+        const { data: copies, error: copiesError } = await supabase
+            .from('video_copies')
+            .select('id, account_id, status, external_post_id, error_message')
+            .eq('video_id', job.video_id);
+
+        if (copiesError) {
+            console.error('Error fetching copies:', copiesError);
+        }
+
+        const results = (copies || []).map(copy => ({
+            accountId: copy.account_id,
+            status: copy.status === 'published' ? 'published' as const :
+                   copy.status === 'failed' ? 'failed' as const : 'pending' as const,
+            postUrl: copy.external_post_id || undefined,
+            error: copy.error_message || undefined,
+        }));
+
+        const completedAccounts = results.filter(r => r.status === 'published').length;
+        const totalAccounts = job.total_copies || results.length;
+        const progress = totalAccounts > 0 ? Math.round((completedAccounts / totalAccounts) * 100) : 0;
+
         return {
             jobId,
-            status: 'processing',
-            progress: 50,
-            completedAccounts: 1,
-            totalAccounts: 2,
-            results: []
+            status: job.status as DistributionStatus['status'],
+            progress,
+            completedAccounts,
+            totalAccounts,
+            results
         };
     } catch (error) {
-        console.error('Error getting status:', error);
+        console.error('Error getting distribution status:', error);
         return null;
     }
 }
 
 /**
- * Genera descripciones únicas para un video
+ * Generates unique descriptions for a video via N8N
  */
 export async function generateDescriptions(baseDescription: string, count: number): Promise<string[]> {
     try {
+        if (!N8N_WEBHOOKS.GENERATE_DESCRIPTIONS) {
+            throw new Error('N8N webhook URL not configured. Set VITE_N8N_GENERATE_DESCRIPTIONS in .env');
+        }
+
         const response = await fetch(N8N_WEBHOOKS.GENERATE_DESCRIPTIONS, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
