@@ -41,6 +41,40 @@ function sleep(ms: number): Promise<void> {
 }
 
 /**
+ * Query creator info to get available privacy levels and constraints
+ */
+async function queryCreatorInfo(accessToken: string): Promise<{
+    privacyLevelOptions: string[];
+    commentDisabled: boolean;
+    duetDisabled: boolean;
+    stitchDisabled: boolean;
+    maxVideoPostDurationSec: number;
+}> {
+    const response = await fetch(`${TIKTOK_API_BASE}/v2/post/publish/creator_info/query/`, {
+        method: 'POST',
+        headers: {
+            'Authorization': `Bearer ${accessToken}`,
+            'Content-Type': 'application/json; charset=UTF-8',
+        },
+    });
+
+    const data = await response.json() as Record<string, any>;
+    console.log('  Creator info response:', JSON.stringify(data, null, 2));
+
+    if (data.error?.code && data.error.code !== 'ok') {
+        console.warn(`  Creator info error: ${data.error.message || data.error.code}`);
+    }
+
+    return {
+        privacyLevelOptions: data.data?.privacy_level_options || ['SELF_ONLY'],
+        commentDisabled: data.data?.comment_disabled ?? false,
+        duetDisabled: data.data?.duet_disabled ?? false,
+        stitchDisabled: data.data?.stitch_disabled ?? false,
+        maxVideoPostDurationSec: data.data?.max_video_post_duration_sec || 60,
+    };
+}
+
+/**
  * Step 1: Initialize video upload and get upload URL
  */
 async function initializeDirectPost(
@@ -64,14 +98,22 @@ async function initializeDirectPost(
         postInfo.video_cover_timestamp_ms = options.videoCoverTimestampMs;
     }
 
-    const sourceInfo: Record<string, unknown> = isChunked
-        ? { source: 'FILE_UPLOAD', chunk_size: CHUNK_SIZE, total_byte_count: fileSize }
-        : { source: 'FILE_UPLOAD', video_size: fileSize };
+    const totalChunkCount = isChunked ? Math.ceil(fileSize / CHUNK_SIZE) : 1;
+    const chunkSize = isChunked ? CHUNK_SIZE : fileSize;
+
+    const sourceInfo: Record<string, unknown> = {
+        source: 'FILE_UPLOAD',
+        video_size: fileSize,
+        chunk_size: chunkSize,
+        total_chunk_count: totalChunkCount,
+    };
 
     const body = {
         post_info: postInfo,
         source_info: sourceInfo,
     };
+
+    console.log('  Request body:', JSON.stringify(body, null, 2));
 
     const response = await fetch(`${TIKTOK_API_BASE}/v2/post/publish/video/init/`, {
         method: 'POST',
@@ -82,7 +124,10 @@ async function initializeDirectPost(
         body: JSON.stringify(body),
     });
 
-    const data = await response.json();
+    const data = await response.json() as Record<string, any>;
+
+    console.log('  Response status:', response.status);
+    console.log('  Response body:', JSON.stringify(data, null, 2));
 
     if (data.error?.code !== 'ok' && data.error?.code) {
         return {
@@ -185,7 +230,7 @@ async function pollPublishStatus(
             body: JSON.stringify({ publish_id: publishId }),
         });
 
-        const data = await response.json();
+        const data = await response.json() as Record<string, any>;
 
         if (data.error?.code && data.error.code !== 'ok') {
             return { status: 'FAILED', error: data.error.message || data.error.code };
@@ -225,11 +270,35 @@ export async function publishToTikTokAPI(options: TikTokPublishOptions): Promise
     }
 
     const fileSize = fs.statSync(videoPath).size;
-    console.log(`Publishing via TikTok API: ${videoPath} (${Math.round(fileSize / 1024 / 1024)}MB)`);
+    console.log(`Publishing via TikTok API: ${videoPath} (${Math.round(fileSize / 1024 / 1024)}MB, ${fileSize} bytes)`);
+
+    // Step 0: Query creator info for available privacy levels
+    console.log('  Step 0: Querying creator info...');
+    const creatorInfo = await queryCreatorInfo(accessToken);
+    console.log(`  Available privacy levels: ${creatorInfo.privacyLevelOptions.join(', ')}`);
+
+    // Use the requested privacy level if available, otherwise fall back to first available
+    const requestedPrivacy = options.privacyLevel || 'PUBLIC_TO_EVERYONE';
+    const effectivePrivacy = creatorInfo.privacyLevelOptions.includes(requestedPrivacy)
+        ? requestedPrivacy
+        : creatorInfo.privacyLevelOptions[0] || 'SELF_ONLY';
+
+    if (effectivePrivacy !== requestedPrivacy) {
+        console.log(`  Privacy level adjusted: ${requestedPrivacy} → ${effectivePrivacy}`);
+    }
+
+    // Override options with creator info constraints
+    const adjustedOptions: TikTokPublishOptions = {
+        ...options,
+        privacyLevel: effectivePrivacy as TikTokPublishOptions['privacyLevel'],
+        disableComment: creatorInfo.commentDisabled || options.disableComment || false,
+        disableDuet: creatorInfo.duetDisabled || options.disableDuet || false,
+        disableStitch: creatorInfo.stitchDisabled || options.disableStitch || false,
+    };
 
     // Step 1: Initialize
     console.log('  Step 1: Initializing direct post...');
-    const initResult = await initializeDirectPost(accessToken, fileSize, description, options);
+    const initResult = await initializeDirectPost(accessToken, fileSize, description, adjustedOptions);
 
     if ('error' in initResult) {
         return { success: false, error: initResult.error, errorCode: initResult.errorCode };

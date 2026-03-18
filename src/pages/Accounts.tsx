@@ -7,6 +7,8 @@ import { getAccounts, toggleAccountStatus, deleteAccount } from '../services/acc
 import { initiateTikTokAuth, handleAuthCallback } from '../services/tiktokAuth';
 import { ConnectionWizard, type ProxyConfig } from '../components/accounts/ConnectionWizard';
 import { CloudBrowser } from '../components/accounts/CloudBrowser';
+import { ProxyPoolStatus } from '../components/accounts/ProxyPoolStatus';
+import { getAvailableProxies, buildProxyUrl } from '../services/proxyPool';
 import type { Account } from '../types';
 import './Accounts.css';
 
@@ -30,6 +32,7 @@ export const Accounts: React.FC = () => {
     const [error, setError] = useState<string | null>(null);
     const [openMenuId, setOpenMenuId] = useState<string | null>(null);
     const [showProxyWizard, setShowProxyWizard] = useState(false);
+    const [autoProxy, setAutoProxy] = useState<ProxyConfig | null>(null);
     const [viewingAccount, setViewingAccount] = useState<Account | null>(null);
     const menuRef = useRef<HTMLDivElement>(null);
     const [searchParams] = useSearchParams();
@@ -86,7 +89,23 @@ export const Accounts: React.FC = () => {
         }
     };
 
-    const handleConnectTikTok = () => {
+    const handleConnectTikTok = async () => {
+        // Try to auto-assign a proxy from the pool
+        try {
+            const available = await getAvailableProxies();
+            if (available.length > 0) {
+                const proxy = available[0];
+                setAutoProxy({
+                    url: buildProxyUrl(proxy),
+                    username: proxy.username || undefined,
+                    password: proxy.password || undefined,
+                });
+            } else {
+                setAutoProxy(null);
+            }
+        } catch {
+            setAutoProxy(null);
+        }
         setShowProxyWizard(true);
     };
 
@@ -201,6 +220,9 @@ export const Accounts: React.FC = () => {
                     {error}
                 </div>
             )}
+
+            {/* Proxy Pool Status */}
+            <ProxyPoolStatus />
 
             {/* Accounts Stats */}
             <motion.div
@@ -340,6 +362,7 @@ export const Accounts: React.FC = () => {
                 isOpen={showProxyWizard}
                 onClose={() => setShowProxyWizard(false)}
                 onConnect={handleProxyConnect}
+                autoProxy={autoProxy}
             />
 
             {viewingAccount && (

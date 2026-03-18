@@ -120,6 +120,17 @@ serve(async (req) => {
 
         console.log('Account saved successfully:', account?.id)
 
+        // If a proxy was provided, try to formally assign it in the proxy pool
+        if (account?.id && proxy_url) {
+            try {
+                await supabaseClient.rpc('assign_next_proxy', { p_account_id: account.id })
+                console.log('Proxy assigned from pool to account:', account.id)
+            } catch (proxyErr) {
+                // Non-fatal: proxy might be manual (not from pool)
+                console.log('Proxy pool assignment skipped (manual proxy or no pool match)')
+            }
+        }
+
         return new Response(
             JSON.stringify({ success: true, message: 'Account connected' }),
             { headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
