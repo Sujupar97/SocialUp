@@ -69,7 +69,7 @@ app.use(express.json());
 async function loadActiveAccounts(platforms?: string[]) {
     let query = supabase
         .from('accounts')
-        .select('id, username, access_token, refresh_token, expires_at, platform, proxy_url')
+        .select('id, username, access_token, refresh_token, expires_at, platform, proxy_url, instagram_user_id')
         .eq('is_active', true)
         .not('access_token', 'is', null)
         .order('created_at', { ascending: true });
@@ -94,7 +94,7 @@ async function loadActiveAccounts(platforms?: string[]) {
 const REFRESH_FUNCTIONS: Record<string, string> = {
     tiktok: 'tiktok-refresh',
     youtube: 'youtube-refresh',
-    // instagram: 'instagram-refresh', // Future
+    instagram: 'instagram-refresh',
 };
 
 /**
@@ -484,6 +484,7 @@ async function processDistribution(
                     videoPath: uniqueVideoPath,
                     title: uniqueDescription.slice(0, 100), // YouTube needs title
                     description: uniqueDescription,
+                    instagramUserId: account.instagram_user_id || undefined,
                 });
 
                 if (publishResult.success) {
@@ -562,13 +563,13 @@ Endpoints:
   POST /api/distribute          - Start video distribution (accepts platforms[] filter)
   GET  /api/status/:id          - Check job status
   GET  /api/accounts            - List all active accounts
-  GET  /api/accounts/:platform  - List accounts by platform (tiktok/youtube)
+  GET  /api/accounts/:platform  - List accounts by platform (tiktok/youtube/instagram)
   POST /api/warmup/start/:id    - Trigger warmup session
   GET  /api/warmup/status       - Today's warmup stats
   GET  /api/warmup/sessions/:id - Session history
   GET  /health                  - Health check
 
-Supported platforms: TikTok, YouTube
+Supported platforms: TikTok, YouTube, Instagram
 
 Config: N8N base = ${SERVER_CONFIG.n8nWebhookBase || '(not set)'}
 Accounts loaded from Supabase (real data only).

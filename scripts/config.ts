@@ -32,6 +32,12 @@ export const YOUTUBE_CONFIG = {
     clientSecret: process.env.YOUTUBE_CLIENT_SECRET || '',
 };
 
+// Instagram/Facebook API config
+export const INSTAGRAM_CONFIG = {
+    appId: process.env.FACEBOOK_APP_ID || '',
+    appSecret: process.env.FACEBOOK_APP_SECRET || '',
+};
+
 // Working directories
 export const PATHS = {
     sessions: './sessions',
@@ -96,6 +102,8 @@ export async function loadConfig(): Promise<void> {
                     'secret:gemini_api_key',
                     'secret:youtube_client_id',
                     'secret:youtube_client_secret',
+                    'secret:facebook_app_id',
+                    'secret:facebook_app_secret',
                 ]
             }
         });
@@ -107,6 +115,8 @@ export async function loadConfig(): Promise<void> {
             if (secrets['secret:gemini_api_key']) GEMINI_CONFIG.apiKey = secrets['secret:gemini_api_key'];
             if (secrets['secret:youtube_client_id']) YOUTUBE_CONFIG.clientId = secrets['secret:youtube_client_id'];
             if (secrets['secret:youtube_client_secret']) YOUTUBE_CONFIG.clientSecret = secrets['secret:youtube_client_secret'];
+            if (secrets['secret:facebook_app_id']) INSTAGRAM_CONFIG.appId = secrets['secret:facebook_app_id'];
+            if (secrets['secret:facebook_app_secret']) INSTAGRAM_CONFIG.appSecret = secrets['secret:facebook_app_secret'];
         }
 
         console.log('Config loaded from Supabase. N8N base:', SERVER_CONFIG.n8nWebhookBase);

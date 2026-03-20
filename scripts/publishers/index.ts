@@ -6,6 +6,7 @@
 
 import { publishToTikTokAPI, type TikTokPublishOptions } from '../tiktok-api-publisher';
 import { publishToYouTubeAPI, type YouTubePublishOptions } from '../youtube-api-publisher';
+import { publishToInstagramAPI, type InstagramPublishOptions } from '../instagram-api-publisher';
 
 // Unified publish interface
 export interface PublishOptions {
@@ -14,6 +15,7 @@ export interface PublishOptions {
     videoPath: string;
     title: string;
     description: string;
+    instagramUserId?: string; // Required for Instagram publishing
 }
 
 export interface PublishResult {
@@ -61,11 +63,33 @@ async function youtubePublisher(options: PublishOptions): Promise<PublishResult>
     };
 }
 
+/**
+ * Instagram adapter — wraps publishToInstagramAPI to unified interface
+ */
+async function instagramPublisher(options: PublishOptions): Promise<PublishResult> {
+    if (!options.instagramUserId) {
+        return { success: false, error: 'Instagram user ID is required for publishing' };
+    }
+
+    const result = await publishToInstagramAPI({
+        videoPath: options.videoPath,
+        caption: options.description,
+        accessToken: options.accessToken,
+        instagramUserId: options.instagramUserId,
+    });
+
+    return {
+        success: result.success,
+        publishId: result.mediaId,
+        error: result.error,
+    };
+}
+
 // Registry of all platform publishers
 const publishers: Record<string, Publisher> = {
     tiktok: tiktokPublisher,
     youtube: youtubePublisher,
-    // instagram: instagramPublisher, // Future
+    instagram: instagramPublisher,
 };
 
 /**

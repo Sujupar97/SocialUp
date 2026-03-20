@@ -17,6 +17,8 @@ export interface Account {
   proxy_password: string | null;
   user_agent: string | null;
   channel_id: string | null; // YouTube channel ID
+  instagram_user_id: string | null; // Instagram Business Account ID
+  facebook_page_id: string | null; // Linked Facebook Page ID
   created_at: string;
   updated_at: string;
 }

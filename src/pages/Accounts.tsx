@@ -6,6 +6,7 @@ import { Card, Button } from '../components/ui';
 import { getAccounts, toggleAccountStatus, deleteAccount } from '../services/accounts';
 import { initiateTikTokAuth, handleAuthCallback } from '../services/tiktokAuth';
 import { initiateYouTubeAuth, handleYouTubeCallback, isYouTubeCallback } from '../services/youtubeAuth';
+import { initiateInstagramAuth, handleInstagramCallback, isInstagramCallback } from '../services/instagramAuth';
 import { ConnectionWizard, type ProxyConfig } from '../components/accounts/ConnectionWizard';
 import { CloudBrowser } from '../components/accounts/CloudBrowser';
 import { ProxyPoolStatus } from '../components/accounts/ProxyPoolStatus';
@@ -82,6 +83,9 @@ export const Accounts: React.FC = () => {
                     if (isYouTubeCallback(searchParams)) {
                         setAuthPlatform('YouTube');
                         await handleYouTubeCallback(code, state || '');
+                    } else if (isInstagramCallback(searchParams)) {
+                        setAuthPlatform('Instagram');
+                        await handleInstagramCallback(code, state || '');
                     } else {
                         setAuthPlatform('TikTok');
                         await handleAuthCallback(code);
@@ -166,6 +170,10 @@ export const Accounts: React.FC = () => {
         initiateYouTubeAuth();
     };
 
+    const handleConnectInstagram = () => {
+        initiateInstagramAuth();
+    };
+
     const handleViewAccount = (account: Account) => {
         setViewingAccount(account);
         setOpenMenuId(null);
@@ -247,6 +255,13 @@ export const Accounts: React.FC = () => {
                         >
                             Conectar YouTube
                         </Button>
+                        <Button
+                            leftIcon={<InstagramIcon />}
+                            onClick={handleConnectInstagram}
+                            style={{ background: 'linear-gradient(45deg, #f09433, #e6683c, #dc2743, #cc2366, #bc1888)', color: 'white', border: 'none' }}
+                        >
+                            Conectar Instagram
+                        </Button>
                     </div>
                 </div>
             </motion.div>
@@ -280,24 +295,29 @@ export const Accounts: React.FC = () => {
 
             {/* Platform Filter Tabs */}
             <div style={{ display: 'flex', gap: '8px', marginBottom: '16px' }}>
-                {['all', 'tiktok', 'youtube'].map(p => (
-                    <button
-                        key={p}
-                        onClick={() => setPlatformFilter(p)}
-                        style={{
-                            padding: '6px 16px',
-                            borderRadius: '20px',
-                            border: platformFilter === p ? 'none' : '1px solid #2A2E35',
-                            background: platformFilter === p ? (p === 'youtube' ? '#FF0000' : p === 'tiktok' ? '#25F4EE' : '#6366F1') : 'transparent',
-                            color: platformFilter === p ? (p === 'tiktok' ? '#000' : '#fff') : '#9CA3AF',
-                            fontSize: '13px',
-                            cursor: 'pointer',
-                            fontWeight: platformFilter === p ? 600 : 400,
-                        }}
-                    >
-                        {p === 'all' ? `Todas (${accounts.length})` : p === 'tiktok' ? `TikTok (${accounts.filter(a => a.platform === 'tiktok').length})` : `YouTube (${accounts.filter(a => a.platform === 'youtube').length})`}
-                    </button>
-                ))}
+                {['all', 'tiktok', 'youtube', 'instagram'].map(p => {
+                    const bgColors: Record<string, string> = { all: '#6366F1', tiktok: '#25F4EE', youtube: '#FF0000', instagram: '#E1306C' };
+                    const labels: Record<string, string> = { all: 'Todas', tiktok: 'TikTok', youtube: 'YouTube', instagram: 'Instagram' };
+                    const count = p === 'all' ? accounts.length : accounts.filter(a => a.platform === p).length;
+                    return (
+                        <button
+                            key={p}
+                            onClick={() => setPlatformFilter(p)}
+                            style={{
+                                padding: '6px 16px',
+                                borderRadius: '20px',
+                                border: platformFilter === p ? 'none' : '1px solid #2A2E35',
+                                background: platformFilter === p ? bgColors[p] : 'transparent',
+                                color: platformFilter === p ? (p === 'tiktok' ? '#000' : '#fff') : '#9CA3AF',
+                                fontSize: '13px',
+                                cursor: 'pointer',
+                                fontWeight: platformFilter === p ? 600 : 400,
+                            }}
+                        >
+                            {`${labels[p]} (${count})`}
+                        </button>
+                    );
+                })}
             </div>
 
             {/* Accounts Grid */}
@@ -440,13 +460,16 @@ export const Accounts: React.FC = () => {
                                     <TikTokIcon />
                                 </div>
                                 <h3>No tienes cuentas conectadas</h3>
-                                <p>Conecta tu primera cuenta de TikTok o YouTube para empezar a publicar automáticamente.</p>
-                                <div style={{ display: 'flex', gap: '8px' }}>
+                                <p>Conecta tu primera cuenta para empezar a publicar automáticamente.</p>
+                                <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap' }}>
                                     <Button onClick={handleConnectTikTok}>
                                         Conectar TikTok
                                     </Button>
                                     <Button onClick={handleConnectYouTube} style={{ background: '#FF0000', color: 'white', border: 'none' }}>
                                         Conectar YouTube
+                                    </Button>
+                                    <Button onClick={handleConnectInstagram} style={{ background: 'linear-gradient(45deg, #f09433, #e6683c, #dc2743, #cc2366, #bc1888)', color: 'white', border: 'none' }}>
+                                        Conectar Instagram
                                     </Button>
                                 </div>
                             </div>
