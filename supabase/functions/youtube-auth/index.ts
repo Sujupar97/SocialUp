@@ -106,18 +106,44 @@ serve(async (req) => {
             dbPayload.user_id = user_id
         }
 
-        console.log('Upserting YouTube account to DB...')
+        console.log('Saving YouTube account to DB...')
 
-        // Upsert by channel_id to prevent duplicates
-        const { data: account, error: upsertError } = await supabaseClient
+        // Check if account with this channel_id already exists
+        const { data: existing } = await supabaseClient
             .from('accounts')
-            .upsert(dbPayload, { onConflict: 'channel_id' })
-            .select()
-            .single()
+            .select('id')
+            .eq('channel_id', channelId)
+            .eq('platform', 'youtube')
+            .maybeSingle()
+
+        let account
+        let upsertError
+
+        if (existing) {
+            // Update existing account
+            const { data, error } = await supabaseClient
+                .from('accounts')
+                .update(dbPayload)
+                .eq('id', existing.id)
+                .select()
+                .single()
+            account = data
+            upsertError = error
+        } else {
+            // Insert new account
+            dbPayload.created_at = now.toISOString()
+            const { data, error } = await supabaseClient
+                .from('accounts')
+                .insert(dbPayload)
+                .select()
+                .single()
+            account = data
+            upsertError = error
+        }
 
         if (upsertError) {
-            console.error('Supabase Upsert Error:', upsertError)
-            throw new Error(`Database Error: ${upsertError.message} (${upsertError.details || ''})`)
+            console.error('Supabase DB Error:', upsertError)
+            throw new Error(`Database Error: ${upsertError.message} (${upsertError.details || ''} | ${upsertError.hint || ''})`)
         }
 
         console.log('YouTube account saved:', account?.id)
