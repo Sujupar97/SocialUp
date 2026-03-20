@@ -1,7 +1,9 @@
 // Account Types
+export type Platform = 'tiktok' | 'instagram' | 'youtube';
+
 export interface Account {
   id: string;
-  platform: 'tiktok' | 'instagram';
+  platform: Platform;
   username: string;
   display_name: string | null;
   profile_photo_url: string | null;
@@ -14,12 +16,13 @@ export interface Account {
   proxy_username: string | null;
   proxy_password: string | null;
   user_agent: string | null;
+  channel_id: string | null; // YouTube channel ID
   created_at: string;
   updated_at: string;
 }
 
 export interface AccountCreateInput {
-  platform: 'tiktok' | 'instagram';
+  platform: Platform;
   username: string;
   display_name?: string;
   profile_photo_url?: string;

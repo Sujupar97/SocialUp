@@ -26,6 +26,12 @@ export const TIKTOK_CONFIG = {
     apiBaseUrl: 'https://open.tiktokapis.com',
 };
 
+// YouTube API config
+export const YOUTUBE_CONFIG = {
+    clientId: process.env.YOUTUBE_CLIENT_ID || '',
+    clientSecret: process.env.YOUTUBE_CLIENT_SECRET || '',
+};
+
 // Working directories
 export const PATHS = {
     sessions: './sessions',
@@ -88,6 +94,8 @@ export async function loadConfig(): Promise<void> {
                     'secret:tiktok_client_key',
                     'secret:tiktok_client_secret',
                     'secret:gemini_api_key',
+                    'secret:youtube_client_id',
+                    'secret:youtube_client_secret',
                 ]
             }
         });
@@ -97,6 +105,8 @@ export async function loadConfig(): Promise<void> {
             if (secrets['secret:tiktok_client_key']) TIKTOK_CONFIG.clientKey = secrets['secret:tiktok_client_key'];
             if (secrets['secret:tiktok_client_secret']) TIKTOK_CONFIG.clientSecret = secrets['secret:tiktok_client_secret'];
             if (secrets['secret:gemini_api_key']) GEMINI_CONFIG.apiKey = secrets['secret:gemini_api_key'];
+            if (secrets['secret:youtube_client_id']) YOUTUBE_CONFIG.clientId = secrets['secret:youtube_client_id'];
+            if (secrets['secret:youtube_client_secret']) YOUTUBE_CONFIG.clientSecret = secrets['secret:youtube_client_secret'];
         }
 
         console.log('Config loaded from Supabase. N8N base:', SERVER_CONFIG.n8nWebhookBase);

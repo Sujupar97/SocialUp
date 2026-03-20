@@ -4,6 +4,7 @@ export const APP_NAME = 'SocialUp';
 export const PLATFORMS = {
     TIKTOK: 'tiktok',
     INSTAGRAM: 'instagram',
+    YOUTUBE: 'youtube',
 } as const;
 
 export const DISTRIBUTION_STATUS = {

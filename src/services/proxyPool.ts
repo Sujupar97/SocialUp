@@ -10,11 +10,27 @@ export interface PoolProxy {
     protocol: string;
     country_code: string | null;
     is_available: boolean;
-    assigned_account_id: string | null;
     is_healthy: boolean;
     last_checked_at: string | null;
     created_at: string;
     updated_at: string;
+}
+
+export interface ProxyAssignment {
+    account_id: string;
+    platform: string;
+    username: string;
+}
+
+export interface ProxyGroup {
+    proxy_id: string;
+    host: string;
+    port: number;
+    country_code: string | null;
+    is_healthy: boolean;
+    is_available: boolean;
+    assignments: ProxyAssignment[];
+    assignment_count: number;
 }
 
 export interface ProxyPoolStats {
@@ -22,6 +38,8 @@ export interface ProxyPoolStats {
     available: number;
     assigned: number;
     unhealthy: number;
+    totalSlots: number;
+    usedSlots: number;
 }
 
 /**
@@ -32,7 +50,7 @@ export function buildProxyUrl(proxy: Pick<PoolProxy, 'protocol' | 'host' | 'port
 }
 
 /**
- * Get all available (unassigned + healthy) proxies
+ * Get all available proxies (has at least 1 free slot and is healthy)
  */
 export async function getAvailableProxies(): Promise<PoolProxy[]> {
     const { data, error } = await supabase
@@ -51,14 +69,43 @@ export async function getAvailableProxies(): Promise<PoolProxy[]> {
 }
 
 /**
- * Atomically assign the next available proxy to an account via RPC
+ * Atomically assign a proxy to an account for a specific platform via RPC.
+ * Prefers proxies that already have assignments on other platforms (groups accounts).
  */
-export async function assignProxyToAccount(accountId: string): Promise<PoolProxy | null> {
+export async function assignProxyToAccount(accountId: string, platform: string): Promise<PoolProxy | null> {
+    const { data, error } = await supabase
+        .rpc('assign_proxy_for_platform', { p_account_id: accountId, p_platform: platform });
+
+    if (error) {
+        if (error.message?.includes('No available proxy')) {
+            console.warn(`No available proxy with free ${platform} slot`);
+            return null;
+        }
+        console.error('Error assigning proxy:', error);
+        throw error;
+    }
+
+    if (!data || data.length === 0) return null;
+
+    const row = data[0];
+    return {
+        id: row.proxy_id,
+        host: row.proxy_host,
+        port: row.proxy_port,
+        username: row.proxy_username,
+        password: row.proxy_password,
+        protocol: row.proxy_protocol,
+    } as PoolProxy;
+}
+
+/**
+ * Legacy: assign next proxy (1:1 model, backwards compatible)
+ */
+export async function assignNextProxy(accountId: string): Promise<PoolProxy | null> {
     const { data, error } = await supabase
         .rpc('assign_next_proxy', { p_account_id: accountId });
 
     if (error) {
-        // No available proxies is not a fatal error
         if (error.message?.includes('No available proxies')) {
             console.warn('No available proxies in pool');
             return null;
@@ -97,41 +144,70 @@ export async function releaseProxy(accountId: string): Promise<void> {
  * Get proxy pool statistics
  */
 export async function getProxyPoolStats(): Promise<ProxyPoolStats> {
-    const { data, error } = await supabase
+    const { data: proxies, error: proxyError } = await supabase
         .from('proxy_pool')
         .select('is_available, is_healthy');
 
-    if (error) {
-        console.error('Error fetching proxy stats:', error);
-        throw error;
+    const { count: usedSlots } = await supabase
+        .from('proxy_account_assignments')
+        .select('id', { count: 'exact', head: true });
+
+    if (proxyError) {
+        console.error('Error fetching proxy stats:', proxyError);
+        throw proxyError;
     }
 
-    const rows = data || [];
+    const rows = proxies || [];
     return {
         total: rows.length,
         available: rows.filter(r => r.is_available && r.is_healthy).length,
         assigned: rows.filter(r => !r.is_available).length,
         unhealthy: rows.filter(r => !r.is_healthy).length,
+        totalSlots: rows.length * 3,
+        usedSlots: usedSlots || 0,
     };
 }
 
 /**
- * Get the proxy assigned to a specific account
+ * Get the proxy assigned to a specific account (via junction table)
  */
 export async function getProxyForAccount(accountId: string): Promise<PoolProxy | null> {
     const { data, error } = await supabase
-        .from('proxy_pool')
-        .select('*')
-        .eq('assigned_account_id', accountId)
+        .from('proxy_account_assignments')
+        .select('proxy_id')
+        .eq('account_id', accountId)
         .single();
 
     if (error) {
-        if (error.code === 'PGRST116') return null; // No rows
+        if (error.code === 'PGRST116') return null;
         console.error('Error fetching proxy for account:', error);
-        throw error;
+        return null;
     }
 
-    return data;
+    const { data: proxy, error: proxyError } = await supabase
+        .from('proxy_pool')
+        .select('*')
+        .eq('id', data.proxy_id)
+        .single();
+
+    if (proxyError) return null;
+    return proxy;
+}
+
+/**
+ * Get proxy groups (proxy + all assigned accounts)
+ */
+export async function getProxyGroups(): Promise<ProxyGroup[]> {
+    const { data, error } = await supabase
+        .from('proxy_groups')
+        .select('*');
+
+    if (error) {
+        console.error('Error fetching proxy groups:', error);
+        return [];
+    }
+
+    return data || [];
 }
 
 /**

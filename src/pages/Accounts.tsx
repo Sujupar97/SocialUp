@@ -1,15 +1,18 @@
 import { useState, useEffect, useRef } from 'react';
 import { useSearchParams } from 'react-router-dom';
 import { motion, AnimatePresence } from 'framer-motion';
-import { MoreVertical, Check, X, Loader2, AlertCircle, Trash2 } from 'lucide-react';
+import { MoreVertical, Check, X, Loader2, AlertCircle, Trash2, Zap, Youtube } from 'lucide-react';
 import { Card, Button } from '../components/ui';
 import { getAccounts, toggleAccountStatus, deleteAccount } from '../services/accounts';
 import { initiateTikTokAuth, handleAuthCallback } from '../services/tiktokAuth';
+import { initiateYouTubeAuth, handleYouTubeCallback, isYouTubeCallback } from '../services/youtubeAuth';
 import { ConnectionWizard, type ProxyConfig } from '../components/accounts/ConnectionWizard';
 import { CloudBrowser } from '../components/accounts/CloudBrowser';
 import { ProxyPoolStatus } from '../components/accounts/ProxyPoolStatus';
 import { getAvailableProxies, buildProxyUrl } from '../services/proxyPool';
+import { getWarmupDailyStats, triggerWarmup } from '../services/warmup';
 import type { Account } from '../types';
+import type { WarmupDailyStats } from '../types/warmup';
 import './Accounts.css';
 
 // ... (Icons remain same)
@@ -25,15 +28,31 @@ const InstagramIcon = () => (
     </svg>
 );
 
+const YouTubeIcon = () => (
+    <Youtube size={20} />
+);
+
+const PlatformIcon = ({ platform }: { platform: string }) => {
+    switch (platform) {
+        case 'tiktok': return <TikTokIcon />;
+        case 'youtube': return <YouTubeIcon />;
+        case 'instagram': return <InstagramIcon />;
+        default: return <TikTokIcon />;
+    }
+};
+
 export const Accounts: React.FC = () => {
     const [accounts, setAccounts] = useState<Account[]>([]);
     const [loading, setLoading] = useState(true);
     const [processingAuth, setProcessingAuth] = useState(false);
+    const [authPlatform, setAuthPlatform] = useState<string>('');
+    const [platformFilter, setPlatformFilter] = useState<string>('all');
     const [error, setError] = useState<string | null>(null);
     const [openMenuId, setOpenMenuId] = useState<string | null>(null);
     const [showProxyWizard, setShowProxyWizard] = useState(false);
     const [autoProxy, setAutoProxy] = useState<ProxyConfig | null>(null);
     const [viewingAccount, setViewingAccount] = useState<Account | null>(null);
+    const [warmupStats, setWarmupStats] = useState<Record<string, WarmupDailyStats>>({});
     const menuRef = useRef<HTMLDivElement>(null);
     const [searchParams] = useSearchParams();
 
@@ -49,23 +68,30 @@ export const Accounts: React.FC = () => {
         return () => document.removeEventListener('mousedown', handleClickOutside);
     }, []);
 
-    // Cargar cuentas y verificar callback de OAuth
+    // Cargar cuentas y verificar callback de OAuth (TikTok o YouTube)
     useEffect(() => {
         const checkAuthAndLoad = async () => {
             const code = searchParams.get('code');
+            const state = searchParams.get('state');
 
             if (code) {
                 setProcessingAuth(true);
-                // Limpiar URL
                 window.history.replaceState({}, '', '/accounts');
 
                 try {
-                    await handleAuthCallback(code);
+                    if (isYouTubeCallback(searchParams)) {
+                        setAuthPlatform('YouTube');
+                        await handleYouTubeCallback(code, state || '');
+                    } else {
+                        setAuthPlatform('TikTok');
+                        await handleAuthCallback(code);
+                    }
                     await loadAccounts();
                 } catch (err) {
-                    setError('Error conectando con TikTok');
+                    setError(`Error conectando con ${authPlatform || 'la plataforma'}`);
                 } finally {
                     setProcessingAuth(false);
+                    setAuthPlatform('');
                 }
             } else {
                 await loadAccounts();
@@ -81,11 +107,33 @@ export const Accounts: React.FC = () => {
             setError(null);
             const data = await getAccounts();
             setAccounts(data);
+
+            // Load warmup stats
+            const stats = await getWarmupDailyStats();
+            const statsMap: Record<string, WarmupDailyStats> = {};
+            for (const s of stats) {
+                statsMap[s.account_id] = s;
+            }
+            setWarmupStats(statsMap);
         } catch (err) {
             console.error('Error loading accounts:', err);
             setError('Error al cargar las cuentas');
         } finally {
             setLoading(false);
+        }
+    };
+
+    const handleTriggerWarmup = async (accountId: string) => {
+        const result = await triggerWarmup(accountId);
+        if (result.success) {
+            // Update stats to show running
+            setWarmupStats(prev => ({
+                ...prev,
+                [accountId]: {
+                    ...prev[accountId],
+                    sessions_running: (prev[accountId]?.sessions_running || 0) + 1,
+                },
+            }));
         }
     };
 
@@ -112,6 +160,10 @@ export const Accounts: React.FC = () => {
     const handleProxyConnect = (proxyConfig: ProxyConfig | null) => {
         setShowProxyWizard(false);
         initiateTikTokAuth(proxyConfig || undefined);
+    };
+
+    const handleConnectYouTube = () => {
+        initiateYouTubeAuth();
     };
 
     const handleViewAccount = (account: Account) => {
@@ -152,45 +204,21 @@ export const Accounts: React.FC = () => {
         );
     }
 
-    // ... (rest of the code is largely same, just updating the map in next chunk if needed or here)
-    // Wait, the ReplacementContent must match TargetContent which is huge. It's safer to use smaller chunks.
-    // But since I need to add state and rewrite Imports, I might as well replace the top of the file.
-    // I need to be careful with the target content.
-
-    // No, I'll do this in 2 chunks.
-    // Chunk 1: Imports and component start definition (state)
-    // Chunk 2: The handle functions and UseEffects
-    // Chunk 3: The JSX inside map (if needed to add menu)
-
-    // Oh wait, the tool call above asks for one big replacement. I should split it if I can't match easily.
-    // I will try to replace the IMPORTS + COMPONENT BODY up to `handleToggleStatus` first.
-
-    // Actually, I can use a simpler approach. Just replace lines 1-190 if I really want to rewrite it all.
-    // The previous view showed up to line 200. I can replace almost the whole file top half.
-
-
-    if (loading && !processingAuth && accounts.length === 0) {
-        return (
-            <div className="accounts-page">
-                <div className="loading-state">
-                    <Loader2 size={40} className="spinning" />
-                    <p>Cargando cuentas...</p>
-                </div>
-            </div>
-        );
-    }
-
     if (processingAuth) {
         return (
             <div className="accounts-page">
                 <div className="loading-state">
                     <Loader2 size={40} className="spinning" />
-                    <p>Conectando con TikTok...</p>
+                    <p>Conectando con {authPlatform || 'la plataforma'}...</p>
                     <span className="text-sm text-gray-500">Estamos intercambiando el token de seguridad</span>
                 </div>
             </div>
         );
     }
+
+    const filteredAccounts = platformFilter === 'all'
+        ? accounts
+        : accounts.filter(a => a.platform === platformFilter);
 
     return (
         <div className="accounts-page">
@@ -202,15 +230,24 @@ export const Accounts: React.FC = () => {
                 <div className="page-header-content">
                     <div>
                         <h1 className="page-title">Gestión de Cuentas</h1>
-                        <p className="page-subtitle">Administra tus cuentas conectadas de TikTok e Instagram</p>
+                        <p className="page-subtitle">Administra tus cuentas conectadas de TikTok, YouTube e Instagram</p>
                     </div>
-                    <Button
-                        leftIcon={<TikTokIcon />}
-                        onClick={handleConnectTikTok}
-                        className="btn-tiktok"
-                    >
-                        Conectar TikTok
-                    </Button>
+                    <div style={{ display: 'flex', gap: '8px' }}>
+                        <Button
+                            leftIcon={<TikTokIcon />}
+                            onClick={handleConnectTikTok}
+                            className="btn-tiktok"
+                        >
+                            Conectar TikTok
+                        </Button>
+                        <Button
+                            leftIcon={<YouTubeIcon />}
+                            onClick={handleConnectYouTube}
+                            style={{ background: '#FF0000', color: 'white', border: 'none' }}
+                        >
+                            Conectar YouTube
+                        </Button>
+                    </div>
                 </div>
             </motion.div>
 
@@ -241,9 +278,31 @@ export const Accounts: React.FC = () => {
                 </div>
             </motion.div>
 
+            {/* Platform Filter Tabs */}
+            <div style={{ display: 'flex', gap: '8px', marginBottom: '16px' }}>
+                {['all', 'tiktok', 'youtube'].map(p => (
+                    <button
+                        key={p}
+                        onClick={() => setPlatformFilter(p)}
+                        style={{
+                            padding: '6px 16px',
+                            borderRadius: '20px',
+                            border: platformFilter === p ? 'none' : '1px solid #2A2E35',
+                            background: platformFilter === p ? (p === 'youtube' ? '#FF0000' : p === 'tiktok' ? '#25F4EE' : '#6366F1') : 'transparent',
+                            color: platformFilter === p ? (p === 'tiktok' ? '#000' : '#fff') : '#9CA3AF',
+                            fontSize: '13px',
+                            cursor: 'pointer',
+                            fontWeight: platformFilter === p ? 600 : 400,
+                        }}
+                    >
+                        {p === 'all' ? `Todas (${accounts.length})` : p === 'tiktok' ? `TikTok (${accounts.filter(a => a.platform === 'tiktok').length})` : `YouTube (${accounts.filter(a => a.platform === 'youtube').length})`}
+                    </button>
+                ))}
+            </div>
+
             {/* Accounts Grid */}
             <div className="accounts-grid">
-                {accounts.map((account, index) => (
+                {filteredAccounts.map((account, index) => (
                     <motion.div
                         key={account.id}
                         initial={{ opacity: 0, y: 20 }}
@@ -260,7 +319,7 @@ export const Accounts: React.FC = () => {
                                             <span>{(account.display_name || account.username)[0].toUpperCase()}</span>
                                         )}
                                         <div className="platform-badge">
-                                            {account.platform === 'tiktok' ? <TikTokIcon /> : <InstagramIcon />}
+                                            <PlatformIcon platform={account.platform} />
                                         </div>
                                     </div>
                                     <div className="relative" ref={openMenuId === account.id ? menuRef : null}>
@@ -313,6 +372,25 @@ export const Accounts: React.FC = () => {
                                     {account.bio && <p className="account-bio">{account.bio}</p>}
                                 </div>
 
+                                {/* Warmup Status */}
+                                {warmupStats[account.id] && (
+                                    <div className="account-warmup" style={{ display: 'flex', alignItems: 'center', gap: '8px', padding: '6px 0', fontSize: '12px', color: '#9CA3AF' }}>
+                                        <Zap size={12} style={{ color: warmupStats[account.id].sessions_running > 0 ? '#FCD34D' : warmupStats[account.id].sessions_today >= 3 ? '#34D399' : '#6B7280' }} />
+                                        <span>
+                                            Warmup: {warmupStats[account.id].sessions_today}/3 hoy
+                                            {warmupStats[account.id].sessions_running > 0 && ' (en curso...)'}
+                                        </span>
+                                        {warmupStats[account.id].sessions_today < 3 && warmupStats[account.id].sessions_running === 0 && (
+                                            <button
+                                                onClick={() => handleTriggerWarmup(account.id)}
+                                                style={{ marginLeft: 'auto', padding: '2px 8px', borderRadius: '4px', background: '#25F4EE20', color: '#25F4EE', fontSize: '11px', border: 'none', cursor: 'pointer' }}
+                                            >
+                                                Iniciar
+                                            </button>
+                                        )}
+                                    </div>
+                                )}
+
                                 <div className="account-status">
                                     <button
                                         className={`status-badge ${account.is_active ? 'active' : 'inactive'}`}
@@ -336,6 +414,20 @@ export const Accounts: React.FC = () => {
                     </motion.div>
                 ))}
 
+                {filteredAccounts.length === 0 && accounts.length > 0 && (
+                    <motion.div
+                        initial={{ opacity: 0, y: 20 }}
+                        animate={{ opacity: 1, y: 0 }}
+                        className="empty-state-card"
+                    >
+                        <Card>
+                            <div className="empty-state-content">
+                                <p>No hay cuentas de {platformFilter} conectadas.</p>
+                            </div>
+                        </Card>
+                    </motion.div>
+                )}
+
                 {accounts.length === 0 && (
                     <motion.div
                         initial={{ opacity: 0, y: 20 }}
@@ -348,10 +440,15 @@ export const Accounts: React.FC = () => {
                                     <TikTokIcon />
                                 </div>
                                 <h3>No tienes cuentas conectadas</h3>
-                                <p>Conecta tu primera cuenta de TikTok para empezar a publicar automáticamente.</p>
-                                <Button onClick={handleConnectTikTok}>
-                                    Conectar Ahora
-                                </Button>
+                                <p>Conecta tu primera cuenta de TikTok o YouTube para empezar a publicar automáticamente.</p>
+                                <div style={{ display: 'flex', gap: '8px' }}>
+                                    <Button onClick={handleConnectTikTok}>
+                                        Conectar TikTok
+                                    </Button>
+                                    <Button onClick={handleConnectYouTube} style={{ background: '#FF0000', color: 'white', border: 'none' }}>
+                                        Conectar YouTube
+                                    </Button>
+                                </div>
                             </div>
                         </Card>
                     </motion.div>

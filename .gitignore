@@ -33,3 +33,11 @@ scripts/sessions/
 
 # Supabase temp files
 supabase/.temp/
+
+# Environment variables (secrets)
+.env
+.env.*
+!.env.example
+
+# Local Netlify folder
+.netlify

@@ -8,7 +8,7 @@
  * 3. Duplicate with FFmpeg (unique copies)
  * 4. Generate descriptions with Gemini AI
  * 5. Create video_copies records in Supabase
- * 6. Publish via TikTok Content Posting API v2
+ * 6. Publish via platform-specific API (TikTok, YouTube, etc.)
  * 7. Post first comment if configured (CTA)
  * 8. Update status in DB throughout
  */
@@ -21,7 +21,8 @@ import fs from 'fs';
 import { createClient } from '@supabase/supabase-js';
 import { duplicateVideo } from './video-processor';
 import { generateDescriptions } from './description-generator';
-import { publishToTikTokAPI } from './tiktok-api-publisher';
+import { getPublisher } from './publishers';
+import { WarmupAgent } from './warmup-agent';
 import { PATHS, SUPABASE_CONFIG, SERVER_CONFIG, loadConfig } from './config';
 import 'dotenv/config';
 
@@ -62,16 +63,24 @@ app.use(cors());
 app.use(express.json());
 
 /**
- * Load active TikTok accounts from Supabase with valid access tokens
+ * Load active accounts from Supabase with valid access tokens.
+ * Optionally filter by platform(s). If no platforms specified, loads all.
  */
-async function loadActiveAccounts() {
-    const { data, error } = await supabase
+async function loadActiveAccounts(platforms?: string[]) {
+    let query = supabase
         .from('accounts')
         .select('id, username, access_token, refresh_token, expires_at, platform, proxy_url')
         .eq('is_active', true)
-        .eq('platform', 'tiktok')
         .not('access_token', 'is', null)
         .order('created_at', { ascending: true });
+
+    if (platforms && platforms.length === 1) {
+        query = query.eq('platform', platforms[0]);
+    } else if (platforms && platforms.length > 1) {
+        query = query.in('platform', platforms);
+    }
+
+    const { data, error } = await query;
 
     if (error) {
         console.error('Error loading accounts:', error.message);
@@ -81,10 +90,18 @@ async function loadActiveAccounts() {
     return data || [];
 }
 
+// Map platform → Edge Function name for token refresh
+const REFRESH_FUNCTIONS: Record<string, string> = {
+    tiktok: 'tiktok-refresh',
+    youtube: 'youtube-refresh',
+    // instagram: 'instagram-refresh', // Future
+};
+
 /**
- * Refresh token for an account if expired or expiring within 10 minutes
+ * Refresh token for an account if expired or expiring within 10 minutes.
+ * Automatically calls the correct Edge Function based on platform.
  */
-async function refreshTokenIfNeeded(account: { id: string; username: string; access_token: string; expires_at: string | null }): Promise<string> {
+async function refreshTokenIfNeeded(account: { id: string; username: string; access_token: string; expires_at: string | null; platform: string }): Promise<string> {
     let accessToken = account.access_token;
 
     if (account.expires_at) {
@@ -92,8 +109,14 @@ async function refreshTokenIfNeeded(account: { id: string; username: string; acc
         const tenMinutesFromNow = new Date(Date.now() + 10 * 60 * 1000);
 
         if (expiresAt <= tenMinutesFromNow) {
-            console.log(`  Token for @${account.username} expired/expiring, refreshing...`);
-            const { data: refreshData, error: refreshError } = await supabase.functions.invoke('tiktok-refresh', {
+            const refreshFn = REFRESH_FUNCTIONS[account.platform];
+            if (!refreshFn) {
+                console.warn(`  No refresh function for platform ${account.platform}, skipping refresh`);
+                return accessToken;
+            }
+
+            console.log(`  Token for @${account.username} (${account.platform}) expired/expiring, refreshing...`);
+            const { data: refreshData, error: refreshError } = await supabase.functions.invoke(refreshFn, {
                 body: { account_id: account.id }
             });
 
@@ -132,14 +155,17 @@ app.post('/api/distribute', upload.single('video'), async (req, res) => {
             return res.status(400).json({ error: 'No se recibio ningun video' });
         }
 
-        const { description, ctaType, ctaContent } = req.body;
+        const { description, ctaType, ctaContent, platforms } = req.body;
         const videoPath = req.file.path;
 
+        // Parse platforms filter (default: all platforms)
+        const platformFilter = platforms ? (Array.isArray(platforms) ? platforms : [platforms]) : undefined;
+
         // Load real accounts from Supabase
-        const accounts = await loadActiveAccounts();
+        const accounts = await loadActiveAccounts(platformFilter);
         if (accounts.length === 0) {
             return res.status(400).json({
-                error: 'No hay cuentas activas con tokens. Conecta al menos 1 cuenta TikTok via OAuth.'
+                error: 'No hay cuentas activas con tokens. Conecta al menos 1 cuenta via OAuth.'
             });
         }
 
@@ -267,11 +293,15 @@ app.get('/api/status/:jobId', async (req, res) => {
 
 /**
  * GET /api/accounts
+ * GET /api/accounts/:platform — filter by platform
  */
-app.get('/api/accounts', async (_req, res) => {
-    const accounts = await loadActiveAccounts();
+app.get('/api/accounts/:platform?', async (req, res) => {
+    const platform = req.params.platform;
+    const platforms = platform ? [platform] : undefined;
+    const accounts = await loadActiveAccounts(platforms);
     res.json({
         total: accounts.length,
+        platform: platform || 'all',
         accounts: accounts.map(a => ({
             id: a.id,
             username: a.username,
@@ -280,6 +310,80 @@ app.get('/api/accounts', async (_req, res) => {
             tokenExpired: a.expires_at ? new Date(a.expires_at) < new Date() : true,
         }))
     });
+});
+
+/**
+ * POST /api/warmup/start/:accountId
+ * Trigger a manual warmup session for a specific account
+ */
+app.post('/api/warmup/start/:accountId', async (req, res) => {
+    const accountId = req.params.accountId;
+
+    const { data: account, error } = await supabase
+        .from('accounts')
+        .select('id, platform, username, proxy_url, proxy_username, proxy_password')
+        .eq('id', accountId)
+        .single();
+
+    if (error || !account) {
+        return res.status(404).json({ error: 'Cuenta no encontrada' });
+    }
+
+    res.json({ success: true, message: `Warmup iniciado para @${account.username}` });
+
+    // Run in background
+    const agent = new WarmupAgent({
+        accountId: account.id,
+        platform: account.platform as 'tiktok' | 'instagram' | 'youtube',
+        username: account.username,
+        proxyUrl: account.proxy_url || undefined,
+        proxyUsername: account.proxy_username || undefined,
+        proxyPassword: account.proxy_password || undefined,
+        minDurationSec: 300,
+        maxDurationSec: 900,
+        headless: true,
+    });
+
+    agent.runSession().then(result => {
+        console.log(`[Warmup] @${account.username}: ${result.success ? 'OK' : 'Failed'} — ${result.actionsPerformed} actions in ${result.durationSec}s`);
+    });
+});
+
+/**
+ * GET /api/warmup/status
+ * Get today's warmup stats for all accounts
+ */
+app.get('/api/warmup/status', async (_req, res) => {
+    const { data, error } = await supabase
+        .from('warmup_daily_stats')
+        .select('*');
+
+    if (error) {
+        return res.status(500).json({ error: error.message });
+    }
+
+    res.json({ accounts: data || [] });
+});
+
+/**
+ * GET /api/warmup/sessions/:accountId
+ * Get warmup session history for a specific account
+ */
+app.get('/api/warmup/sessions/:accountId', async (req, res) => {
+    const accountId = req.params.accountId;
+
+    const { data, error } = await supabase
+        .from('warmup_sessions')
+        .select('id, platform, status, started_at, ended_at, session_duration_sec, actions_count, actions_summary, error_message')
+        .eq('account_id', accountId)
+        .order('created_at', { ascending: false })
+        .limit(20);
+
+    if (error) {
+        return res.status(500).json({ error: error.message });
+    }
+
+    res.json({ sessions: data || [] });
 });
 
 /**
@@ -372,10 +476,14 @@ async function processDistribution(
             try {
                 const accessToken = await refreshTokenIfNeeded(account);
 
-                const publishResult = await publishToTikTokAPI({
-                    videoPath: uniqueVideoPath,
-                    description: uniqueDescription,
+                // Use publisher registry to dispatch to correct platform
+                const publisher = getPublisher(account.platform);
+                const publishResult = await publisher({
+                    accountId: account.id,
                     accessToken,
+                    videoPath: uniqueVideoPath,
+                    title: uniqueDescription.slice(0, 100), // YouTube needs title
+                    description: uniqueDescription,
                 });
 
                 if (publishResult.success) {
@@ -386,7 +494,7 @@ async function processDistribution(
                     }).eq('id', copyId);
 
                     completedCount++;
-                    console.log(`  @${account.username}: Published (${publishResult.publishId})`);
+                    console.log(`  @${account.username} [${account.platform}]: Published (${publishResult.publishId})`);
 
                     // Save first comment if CTA configured
                     if (ctaType === 'first_comment' && ctaContent) {
@@ -398,7 +506,7 @@ async function processDistribution(
                         error_message: publishResult.error || 'Unknown error',
                     }).eq('id', copyId);
 
-                    console.log(`  @${account.username}: Failed - ${publishResult.error}`);
+                    console.log(`  @${account.username} [${account.platform}]: Failed - ${publishResult.error}`);
                 }
             } catch (err: any) {
                 await supabase.from('video_copies').update({
@@ -451,10 +559,16 @@ loadConfig().then(() => {
 ContentHub Automation Server running on port ${PORT}
 
 Endpoints:
-  POST /api/distribute  - Start video distribution
-  GET  /api/status/:id  - Check job status
-  GET  /api/accounts    - List active accounts
-  GET  /health          - Health check
+  POST /api/distribute          - Start video distribution (accepts platforms[] filter)
+  GET  /api/status/:id          - Check job status
+  GET  /api/accounts            - List all active accounts
+  GET  /api/accounts/:platform  - List accounts by platform (tiktok/youtube)
+  POST /api/warmup/start/:id    - Trigger warmup session
+  GET  /api/warmup/status       - Today's warmup stats
+  GET  /api/warmup/sessions/:id - Session history
+  GET  /health                  - Health check
+
+Supported platforms: TikTok, YouTube
 
 Config: N8N base = ${SERVER_CONFIG.n8nWebhookBase || '(not set)'}
 Accounts loaded from Supabase (real data only).

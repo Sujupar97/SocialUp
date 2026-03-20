@@ -2,10 +2,14 @@
  * ContentHub - TikTok API Publisher
  * Publishes videos via TikTok's official Content Posting API v2
  *
+ * For audited apps:  Direct Post → video published immediately
+ * For unaudited apps: Inbox Post → video sent to creator's inbox as draft
+ *
  * Flow:
- * 1. POST /v2/post/publish/video/init/ → get upload_url + publish_id
+ * 1. Try POST /v2/post/publish/video/init/ (direct)
+ *    → If unaudited, fallback to /v2/post/publish/inbox/video/init/
  * 2. PUT upload_url with video binary (chunked for large files)
- * 3. Poll GET /v2/post/publish/status/fetch/ until published
+ * 3. Poll POST /v2/post/publish/status/fetch/ until complete
  *
  * Requires: access_token with video.publish + video.upload scopes
  */
@@ -34,6 +38,7 @@ export interface TikTokPublishResult {
     publishId?: string;
     error?: string;
     errorCode?: string;
+    isInbox?: boolean; // true if published via inbox (unaudited app)
 }
 
 function sleep(ms: number): Promise<void> {
@@ -76,16 +81,27 @@ async function queryCreatorInfo(accessToken: string): Promise<{
 
 /**
  * Step 1: Initialize video upload and get upload URL
+ * Tries Direct Post first, falls back to Inbox for unaudited apps.
  */
-async function initializeDirectPost(
+async function initializePost(
     accessToken: string,
     fileSize: number,
     description: string,
     options: TikTokPublishOptions
-): Promise<{ publishId: string; uploadUrl: string } | { error: string; errorCode?: string }> {
+): Promise<{ publishId: string; uploadUrl: string; isInbox: boolean } | { error: string; errorCode?: string }> {
 
     const isChunked = fileSize > CHUNK_SIZE;
+    const totalChunkCount = isChunked ? Math.ceil(fileSize / CHUNK_SIZE) : 1;
+    const chunkSize = isChunked ? CHUNK_SIZE : fileSize;
 
+    const sourceInfo: Record<string, unknown> = {
+        source: 'FILE_UPLOAD',
+        video_size: fileSize,
+        chunk_size: chunkSize,
+        total_chunk_count: totalChunkCount,
+    };
+
+    // Try Direct Post first (audited apps)
     const postInfo: Record<string, unknown> = {
         title: description.slice(0, 2200),
         privacy_level: options.privacyLevel || 'PUBLIC_TO_EVERYONE',
@@ -98,52 +114,65 @@ async function initializeDirectPost(
         postInfo.video_cover_timestamp_ms = options.videoCoverTimestampMs;
     }
 
-    const totalChunkCount = isChunked ? Math.ceil(fileSize / CHUNK_SIZE) : 1;
-    const chunkSize = isChunked ? CHUNK_SIZE : fileSize;
-
-    const sourceInfo: Record<string, unknown> = {
-        source: 'FILE_UPLOAD',
-        video_size: fileSize,
-        chunk_size: chunkSize,
-        total_chunk_count: totalChunkCount,
-    };
-
-    const body = {
-        post_info: postInfo,
-        source_info: sourceInfo,
-    };
-
-    console.log('  Request body:', JSON.stringify(body, null, 2));
-
-    const response = await fetch(`${TIKTOK_API_BASE}/v2/post/publish/video/init/`, {
+    console.log('  Trying Direct Post...');
+    const directResponse = await fetch(`${TIKTOK_API_BASE}/v2/post/publish/video/init/`, {
         method: 'POST',
         headers: {
             'Authorization': `Bearer ${accessToken}`,
             'Content-Type': 'application/json; charset=UTF-8',
         },
-        body: JSON.stringify(body),
+        body: JSON.stringify({ post_info: postInfo, source_info: sourceInfo }),
     });
 
-    const data = await response.json() as Record<string, any>;
+    const directData = await directResponse.json() as Record<string, any>;
 
-    console.log('  Response status:', response.status);
-    console.log('  Response body:', JSON.stringify(data, null, 2));
-
-    if (data.error?.code !== 'ok' && data.error?.code) {
+    if (directData.error?.code === 'ok' && directData.data?.publish_id) {
+        console.log('  Direct Post accepted.');
         return {
-            error: data.error.message || `TikTok API error: ${data.error.code}`,
-            errorCode: data.error.code,
+            publishId: directData.data.publish_id,
+            uploadUrl: directData.data.upload_url,
+            isInbox: false,
         };
     }
 
-    const publishId = data.data?.publish_id;
-    const uploadUrl = data.data?.upload_url;
+    // If unaudited, fall back to Inbox endpoint
+    if (directData.error?.code === 'unaudited_client_can_only_post_to_private_accounts') {
+        console.log('  App not audited — falling back to Inbox Post...');
 
-    if (!publishId || !uploadUrl) {
-        return { error: 'Missing publish_id or upload_url in TikTok response' };
+        const inboxResponse = await fetch(`${TIKTOK_API_BASE}/v2/post/publish/inbox/video/init/`, {
+            method: 'POST',
+            headers: {
+                'Authorization': `Bearer ${accessToken}`,
+                'Content-Type': 'application/json; charset=UTF-8',
+            },
+            body: JSON.stringify({ source_info: sourceInfo }),
+        });
+
+        const inboxData = await inboxResponse.json() as Record<string, any>;
+
+        if (inboxData.error?.code !== 'ok' && inboxData.error?.code) {
+            return {
+                error: inboxData.error.message || `Inbox API error: ${inboxData.error.code}`,
+                errorCode: inboxData.error.code,
+            };
+        }
+
+        if (!inboxData.data?.publish_id || !inboxData.data?.upload_url) {
+            return { error: 'Missing publish_id or upload_url in Inbox response' };
+        }
+
+        return {
+            publishId: inboxData.data.publish_id,
+            uploadUrl: inboxData.data.upload_url,
+            isInbox: true,
+        };
     }
 
-    return { publishId, uploadUrl };
+    // Other error
+    return {
+        error: directData.error?.message || `TikTok API error: ${directData.error?.code}`,
+        errorCode: directData.error?.code,
+    };
 }
 
 /**
@@ -154,7 +183,6 @@ async function uploadVideoFile(uploadUrl: string, videoPath: string, fileSize: n
     const isChunked = fileSize > CHUNK_SIZE;
 
     if (!isChunked) {
-        // Single upload for files <= CHUNK_SIZE
         const videoBuffer = fs.readFileSync(videoPath);
 
         const response = await fetch(uploadUrl, {
@@ -182,18 +210,18 @@ async function uploadVideoFile(uploadUrl: string, videoPath: string, fileSize: n
         for (let i = 0; i < totalChunks; i++) {
             const start = i * CHUNK_SIZE;
             const end = Math.min(start + CHUNK_SIZE, fileSize);
-            const chunkSize = end - start;
+            const thisChunkSize = end - start;
 
-            const buffer = Buffer.alloc(chunkSize);
-            fs.readSync(fileHandle, buffer, 0, chunkSize, start);
+            const buffer = Buffer.alloc(thisChunkSize);
+            fs.readSync(fileHandle, buffer, 0, thisChunkSize, start);
 
-            console.log(`  Uploading chunk ${i + 1}/${totalChunks} (${Math.round(chunkSize / 1024 / 1024)}MB)...`);
+            console.log(`  Uploading chunk ${i + 1}/${totalChunks} (${Math.round(thisChunkSize / 1024 / 1024)}MB)...`);
 
             const response = await fetch(uploadUrl, {
                 method: 'PUT',
                 headers: {
                     'Content-Type': 'video/mp4',
-                    'Content-Length': chunkSize.toString(),
+                    'Content-Length': thisChunkSize.toString(),
                     'Content-Range': `bytes ${start}-${end - 1}/${fileSize}`,
                 },
                 body: buffer,
@@ -260,7 +288,6 @@ async function pollPublishStatus(
 export async function publishToTikTokAPI(options: TikTokPublishOptions): Promise<TikTokPublishResult> {
     const { videoPath, description, accessToken } = options;
 
-    // Validate video file exists
     if (!fs.existsSync(videoPath)) {
         return { success: false, error: `Video not found: ${videoPath}` };
     }
@@ -277,7 +304,6 @@ export async function publishToTikTokAPI(options: TikTokPublishOptions): Promise
     const creatorInfo = await queryCreatorInfo(accessToken);
     console.log(`  Available privacy levels: ${creatorInfo.privacyLevelOptions.join(', ')}`);
 
-    // Use the requested privacy level if available, otherwise fall back to first available
     const requestedPrivacy = options.privacyLevel || 'PUBLIC_TO_EVERYONE';
     const effectivePrivacy = creatorInfo.privacyLevelOptions.includes(requestedPrivacy)
         ? requestedPrivacy
@@ -287,7 +313,6 @@ export async function publishToTikTokAPI(options: TikTokPublishOptions): Promise
         console.log(`  Privacy level adjusted: ${requestedPrivacy} → ${effectivePrivacy}`);
     }
 
-    // Override options with creator info constraints
     const adjustedOptions: TikTokPublishOptions = {
         ...options,
         privacyLevel: effectivePrivacy as TikTokPublishOptions['privacyLevel'],
@@ -296,23 +321,23 @@ export async function publishToTikTokAPI(options: TikTokPublishOptions): Promise
         disableStitch: creatorInfo.stitchDisabled || options.disableStitch || false,
     };
 
-    // Step 1: Initialize
-    console.log('  Step 1: Initializing direct post...');
-    const initResult = await initializeDirectPost(accessToken, fileSize, description, adjustedOptions);
+    // Step 1: Initialize (Direct Post → fallback to Inbox)
+    console.log('  Step 1: Initializing post...');
+    const initResult = await initializePost(accessToken, fileSize, description, adjustedOptions);
 
     if ('error' in initResult) {
         return { success: false, error: initResult.error, errorCode: initResult.errorCode };
     }
 
-    const { publishId, uploadUrl } = initResult;
-    console.log(`  Publish ID: ${publishId}`);
+    const { publishId, uploadUrl, isInbox } = initResult;
+    console.log(`  Publish ID: ${publishId} (${isInbox ? 'INBOX' : 'DIRECT'})`);
 
     // Step 2: Upload video
     console.log('  Step 2: Uploading video...');
     const uploadResult = await uploadVideoFile(uploadUrl, videoPath, fileSize);
 
     if (uploadResult.error) {
-        return { success: false, publishId, error: uploadResult.error };
+        return { success: false, publishId, error: uploadResult.error, isInbox };
     }
 
     console.log('  Upload complete.');
@@ -322,14 +347,21 @@ export async function publishToTikTokAPI(options: TikTokPublishOptions): Promise
     const statusResult = await pollPublishStatus(accessToken, publishId);
 
     if (statusResult.status === 'PUBLISH_COMPLETE') {
-        console.log('  Published successfully!');
-        return { success: true, publishId };
+        console.log(`  Published successfully! ${isInbox ? '(sent to inbox — user must publish from TikTok app)' : ''}`);
+        return { success: true, publishId, isInbox };
+    }
+
+    // For inbox posts, SENDING_TO_USER_INBOX followed by timeout is actually success
+    if (isInbox && statusResult.status === 'TIMEOUT') {
+        console.log('  Inbox upload completed (video sent to creator inbox).');
+        return { success: true, publishId, isInbox: true };
     }
 
     return {
         success: false,
         publishId,
         error: statusResult.error || `Unexpected status: ${statusResult.status}`,
+        isInbox,
     };
 }
 
@@ -350,7 +382,7 @@ Usage: npx ts-node tiktok-api-publisher.ts <video_path> <description> <access_to
     publishToTikTokAPI({ videoPath, description, accessToken })
         .then(result => {
             if (result.success) {
-                console.log(`\nPublished! Publish ID: ${result.publishId}`);
+                console.log(`\nPublished! Publish ID: ${result.publishId}${result.isInbox ? ' (inbox)' : ''}`);
             } else {
                 console.error(`\nFailed: ${result.error}`);
             }
