@@ -3,6 +3,8 @@ import { motion, AnimatePresence } from 'framer-motion';
 import { Upload as UploadIcon, Video, X, MessageSquare, AtSign, Send, Loader2, CheckCircle, AlertCircle } from 'lucide-react';
 import { Card, CardHeader, CardContent, Button } from '../components/ui';
 import { CTA_TYPES, AUTOMATION_SERVER } from '../utils/constants';
+import { supabase } from '../services/supabase';
+import type { Platform } from '../types/account';
 import './Upload.css';
 
 type CTAType = 'first_comment' | 'keyword_response' | null;
@@ -16,6 +18,38 @@ interface JobState {
     results: { account: string; success: boolean; error?: string }[];
 }
 
+interface PlatformOption {
+    id: Platform;
+    label: string;
+    icon: string;
+    color: string;
+    activeColor: string;
+}
+
+const PLATFORM_OPTIONS: PlatformOption[] = [
+    {
+        id: 'tiktok',
+        label: 'TikTok',
+        icon: '♪',
+        color: 'rgba(0, 0, 0, 0.3)',
+        activeColor: 'linear-gradient(135deg, #00f2ea, #ff0050)',
+    },
+    {
+        id: 'youtube',
+        label: 'YouTube Shorts',
+        icon: '▶',
+        color: 'rgba(255, 0, 0, 0.2)',
+        activeColor: 'linear-gradient(135deg, #FF0000, #cc0000)',
+    },
+    {
+        id: 'instagram',
+        label: 'Instagram Reels',
+        icon: '📷',
+        color: 'rgba(225, 48, 108, 0.2)',
+        activeColor: 'linear-gradient(135deg, #833AB4, #E1306C, #F77737)',
+    },
+];
+
 export const Upload: React.FC = () => {
     const [dragActive, setDragActive] = useState(false);
     const [selectedFile, setSelectedFile] = useState<File | null>(null);
@@ -24,6 +58,8 @@ export const Upload: React.FC = () => {
     const [ctaText, setCtaText] = useState('');
     const [keywordTrigger, setKeywordTrigger] = useState('');
     const [autoResponse, setAutoResponse] = useState('');
+    const [selectedPlatforms, setSelectedPlatforms] = useState<Platform[]>([]);
+    const [accountCounts, setAccountCounts] = useState<Record<Platform, number>>({ tiktok: 0, youtube: 0, instagram: 0 });
     const [job, setJob] = useState<JobState>({
         id: null,
         status: 'idle',
@@ -33,6 +69,35 @@ export const Upload: React.FC = () => {
     });
 
     const inputRef = useRef<HTMLInputElement>(null);
+
+    // Load account counts per platform
+    useEffect(() => {
+        const loadCounts = async () => {
+            try {
+                const { data, error } = await supabase
+                    .from('accounts')
+                    .select('platform')
+                    .eq('is_active', true);
+
+                if (error || !data) return;
+
+                const counts: Record<Platform, number> = { tiktok: 0, youtube: 0, instagram: 0 };
+                for (const row of data) {
+                    if (row.platform in counts) {
+                        counts[row.platform as Platform]++;
+                    }
+                }
+                setAccountCounts(counts);
+
+                // Auto-select platforms that have accounts
+                const active = (Object.keys(counts) as Platform[]).filter(p => counts[p] > 0);
+                setSelectedPlatforms(active);
+            } catch (err) {
+                console.error('Error loading account counts:', err);
+            }
+        };
+        loadCounts();
+    }, []);
 
     // Polling para actualizar estado del job
     useEffect(() => {
@@ -58,6 +123,16 @@ export const Upload: React.FC = () => {
 
         return () => clearInterval(interval);
     }, [job.id, job.status]);
+
+    const togglePlatform = (platform: Platform) => {
+        setSelectedPlatforms(prev =>
+            prev.includes(platform)
+                ? prev.filter(p => p !== platform)
+                : [...prev, platform]
+        );
+    };
+
+    const totalAccounts = selectedPlatforms.reduce((sum, p) => sum + accountCounts[p], 0);
 
     const handleDrag = (e: React.DragEvent) => {
         e.preventDefault();
@@ -95,7 +170,7 @@ export const Upload: React.FC = () => {
     };
 
     const handleSubmit = async () => {
-        if (!selectedFile) return;
+        if (!selectedFile || selectedPlatforms.length === 0) return;
 
         setJob({ id: null, status: 'uploading', progress: 0, message: 'Subiendo video...', results: [] });
 
@@ -105,6 +180,7 @@ export const Upload: React.FC = () => {
             formData.append('description', description);
             formData.append('ctaType', ctaType || '');
             formData.append('ctaContent', ctaType === 'first_comment' ? ctaText : autoResponse);
+            formData.append('platforms', JSON.stringify(selectedPlatforms));
 
             const response = await fetch(`${AUTOMATION_SERVER}/api/distribute`, {
                 method: 'POST',
@@ -237,13 +313,13 @@ export const Upload: React.FC = () => {
                 >
                     <Card>
                         <CardHeader
-                            title="Caption"
-                            subtitle="Write a compelling caption for your TikTok post"
+                            title="Descripción"
+                            subtitle="Escribe una descripción para tu publicación"
                         />
                         <CardContent>
                             <textarea
                                 className="description-input"
-                                placeholder="Write your video caption here. Add relevant hashtags to increase reach..."
+                                placeholder="Escribe la descripción de tu video. Agrega hashtags relevantes para aumentar el alcance..."
                                 value={description}
                                 onChange={(e) => setDescription(e.target.value)}
                                 rows={5}
@@ -251,6 +327,50 @@ export const Upload: React.FC = () => {
                             <div className="description-footer">
                                 <span className="char-count">{description.length} / 2200 caracteres</span>
                             </div>
+                        </CardContent>
+                    </Card>
+                </motion.div>
+
+                {/* Platform Selector */}
+                <motion.div
+                    initial={{ opacity: 0, y: 20 }}
+                    animate={{ opacity: 1, y: 0 }}
+                    transition={{ delay: 0.25 }}
+                >
+                    <Card>
+                        <CardHeader
+                            title="Plataformas"
+                            subtitle="Selecciona en qué plataformas publicar"
+                        />
+                        <CardContent>
+                            <div className="platform-selector">
+                                {PLATFORM_OPTIONS.map((platform) => {
+                                    const count = accountCounts[platform.id];
+                                    const isSelected = selectedPlatforms.includes(platform.id);
+                                    const isDisabled = count === 0;
+
+                                    return (
+                                        <button
+                                            key={platform.id}
+                                            className={`platform-toggle ${isSelected ? 'active' : ''} ${isDisabled ? 'disabled' : ''}`}
+                                            onClick={() => !isDisabled && togglePlatform(platform.id)}
+                                            disabled={isDisabled}
+                                            style={isSelected ? { background: platform.activeColor } : undefined}
+                                        >
+                                            <span className="platform-icon">{platform.icon}</span>
+                                            <span className="platform-name">{platform.label}</span>
+                                            <span className="platform-count">
+                                                {count > 0 ? `${count} cuenta${count !== 1 ? 's' : ''}` : 'Sin cuentas'}
+                                            </span>
+                                        </button>
+                                    );
+                                })}
+                            </div>
+                            {totalAccounts > 0 && (
+                                <p className="platform-summary">
+                                    Se publicará en <strong>{totalAccounts} cuenta{totalAccounts !== 1 ? 's' : ''}</strong> en {selectedPlatforms.length} plataforma{selectedPlatforms.length !== 1 ? 's' : ''}
+                                </p>
+                            )}
                         </CardContent>
                     </Card>
                 </motion.div>
@@ -354,12 +474,18 @@ export const Upload: React.FC = () => {
                             size="lg"
                             leftIcon={<Send size={20} />}
                             onClick={handleSubmit}
-                            disabled={!selectedFile || !description}
+                            disabled={!selectedFile || !description || selectedPlatforms.length === 0}
                         >
-                            Publish to TikTok
+                            {selectedPlatforms.length === 0
+                                ? 'Selecciona una plataforma'
+                                : `Publicar en ${selectedPlatforms.length} plataforma${selectedPlatforms.length !== 1 ? 's' : ''} (${totalAccounts} cuenta${totalAccounts !== 1 ? 's' : ''})`
+                            }
                         </Button>
                         <span className="upload-hint">
-                            Your video will be posted to your connected TikTok account
+                            {selectedPlatforms.length > 0
+                                ? `Tu video se publicará en: ${selectedPlatforms.map(p => PLATFORM_OPTIONS.find(o => o.id === p)?.label).join(', ')}`
+                                : 'Selecciona al menos una plataforma para publicar'
+                            }
                         </span>
                     </>
                 )}
@@ -370,7 +496,7 @@ export const Upload: React.FC = () => {
                             <div className="progress-container">
                                 <div className="progress-header">
                                     <Loader2 className="spin" size={24} />
-                                    <span className="progress-title">Publishing...</span>
+                                    <span className="progress-title">Publicando...</span>
                                 </div>
                                 <div className="progress-bar-container">
                                     <div
@@ -421,7 +547,7 @@ export const Upload: React.FC = () => {
                                     <ul>
                                         <li>El servidor de automatización esté corriendo</li>
                                         <li>La variable VITE_AUTOMATION_SERVER esté configurada en .env</li>
-                                        <li>Las cuentas de TikTok estén conectadas vía OAuth</li>
+                                        <li>Las cuentas estén conectadas vía OAuth</li>
                                     </ul>
                                 </div>
                                 <Button onClick={resetForm} variant="secondary" style={{ marginTop: '1rem' }}>

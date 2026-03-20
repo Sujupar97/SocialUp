@@ -69,7 +69,7 @@ app.use(express.json());
 async function loadActiveAccounts(platforms?: string[]) {
     let query = supabase
         .from('accounts')
-        .select('id, username, access_token, refresh_token, expires_at, platform, proxy_url, instagram_user_id')
+        .select('id, username, access_token, refresh_token, expires_at, platform, proxy_url, channel_id, instagram_user_id')
         .eq('is_active', true)
         .not('access_token', 'is', null)
         .order('created_at', { ascending: true });
@@ -159,10 +159,23 @@ app.post('/api/distribute', upload.single('video'), async (req, res) => {
         const videoPath = req.file.path;
 
         // Parse platforms filter (default: all platforms)
-        const platformFilter = platforms ? (Array.isArray(platforms) ? platforms : [platforms]) : undefined;
+        // Frontend sends JSON string via FormData, so parse if needed
+        let platformFilter: string[] | undefined;
+        if (platforms) {
+            try {
+                const parsed = typeof platforms === 'string' ? JSON.parse(platforms) : platforms;
+                platformFilter = Array.isArray(parsed) ? parsed : [parsed];
+            } catch {
+                platformFilter = [platforms];
+            }
+        }
+
+        console.log(`[distribute] Raw platforms value: ${JSON.stringify(platforms)} (type: ${typeof platforms})`);
+        console.log(`[distribute] Parsed platformFilter: ${JSON.stringify(platformFilter)}`);
 
         // Load real accounts from Supabase
         const accounts = await loadActiveAccounts(platformFilter);
+        console.log(`[distribute] Loaded ${accounts.length} accounts:`, accounts.map(a => `${a.username} (${a.platform})`));
         if (accounts.length === 0) {
             return res.status(400).json({
                 error: 'No hay cuentas activas con tokens. Conecta al menos 1 cuenta via OAuth.'
@@ -295,13 +308,27 @@ app.get('/api/status/:jobId', async (req, res) => {
  * GET /api/accounts
  * GET /api/accounts/:platform — filter by platform
  */
-app.get('/api/accounts/:platform?', async (req, res) => {
-    const platform = req.params.platform;
-    const platforms = platform ? [platform] : undefined;
-    const accounts = await loadActiveAccounts(platforms);
+app.get('/api/accounts', async (req, res) => {
+    const accounts = await loadActiveAccounts();
     res.json({
         total: accounts.length,
-        platform: platform || 'all',
+        platform: 'all',
+        accounts: accounts.map(a => ({
+            id: a.id,
+            username: a.username,
+            platform: a.platform,
+            hasToken: !!a.access_token,
+            tokenExpired: a.expires_at ? new Date(a.expires_at) < new Date() : true,
+        }))
+    });
+});
+
+app.get('/api/accounts/:platform', async (req, res) => {
+    const platform = req.params.platform;
+    const accounts = await loadActiveAccounts([platform]);
+    res.json({
+        total: accounts.length,
+        platform,
         accounts: accounts.map(a => ({
             id: a.id,
             username: a.username,
