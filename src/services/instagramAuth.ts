@@ -1,20 +1,19 @@
 import { supabase } from './supabase';
 
-const FACEBOOK_APP_ID = import.meta.env.VITE_FACEBOOK_APP_ID || '';
+const INSTAGRAM_APP_ID = import.meta.env.VITE_INSTAGRAM_APP_ID || '';
 const REDIRECT_URI = 'https://socialfullup.netlify.app';
-const SCOPES = 'instagram_basic,instagram_content_publish,pages_read_engagement,pages_show_list';
-const GRAPH_API_VERSION = 'v22.0';
+const SCOPES = 'instagram_business_basic,instagram_business_content_publish,instagram_business_manage_messages';
 
 /**
- * Start Instagram OAuth flow via Facebook Login.
- * Redirects user to Facebook's consent screen.
+ * Start Instagram OAuth flow via Instagram Business Login.
+ * Redirects user to Instagram's consent screen.
  */
 export const initiateInstagramAuth = () => {
     const state = Math.random().toString(36).substring(7);
     localStorage.setItem('instagram_auth_state', state);
 
-    const authUrl = new URL(`https://www.facebook.com/${GRAPH_API_VERSION}/dialog/oauth`);
-    authUrl.searchParams.append('client_id', FACEBOOK_APP_ID);
+    const authUrl = new URL('https://www.instagram.com/oauth/authorize');
+    authUrl.searchParams.append('client_id', INSTAGRAM_APP_ID);
     authUrl.searchParams.append('redirect_uri', REDIRECT_URI);
     authUrl.searchParams.append('scope', SCOPES);
     authUrl.searchParams.append('response_type', 'code');
@@ -24,7 +23,7 @@ export const initiateInstagramAuth = () => {
 };
 
 /**
- * Handle the OAuth callback from Facebook.
+ * Handle the OAuth callback from Instagram.
  * Validates state, exchanges code via Edge Function, returns account.
  */
 export const handleInstagramCallback = async (code: string, state: string) => {
@@ -108,7 +107,7 @@ export const refreshInstagramTokenIfNeeded = async (accountId: string): Promise<
 };
 
 /**
- * Detect if the current URL callback is from Instagram/Facebook OAuth.
+ * Detect if the current URL callback is from Instagram OAuth.
  */
 export const isInstagramCallback = (searchParams: URLSearchParams): boolean => {
     const state = searchParams.get('state');

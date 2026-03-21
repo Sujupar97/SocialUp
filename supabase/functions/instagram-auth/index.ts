@@ -3,8 +3,6 @@ import { createClient } from 'https://esm.sh/@supabase/supabase-js@2'
 
 console.log("Instagram Auth Function Up!")
 
-const GRAPH_API_VERSION = 'v22.0'
-
 const corsHeaders = {
     'Access-Control-Allow-Origin': '*',
     'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type, x-supabase-client-platform',
@@ -18,39 +16,43 @@ serve(async (req) => {
     try {
         const { code, redirect_uri, user_id } = await req.json()
 
-        const appId = Deno.env.get('FACEBOOK_APP_ID')
-        const appSecret = Deno.env.get('FACEBOOK_APP_SECRET')
+        const appId = Deno.env.get('INSTAGRAM_APP_ID')
+        const appSecret = Deno.env.get('INSTAGRAM_APP_SECRET')
 
         if (!appId || !appSecret) {
-            throw new Error('FACEBOOK_APP_ID or FACEBOOK_APP_SECRET not set in Edge Function Secrets')
+            throw new Error('INSTAGRAM_APP_ID or INSTAGRAM_APP_SECRET not set in Edge Function Secrets')
         }
 
-        console.log(`Exchanging Instagram/Facebook auth code...`)
+        console.log(`Exchanging Instagram auth code...`)
 
-        // 1. Exchange code for short-lived token
-        const tokenUrl = `https://graph.facebook.com/${GRAPH_API_VERSION}/oauth/access_token` +
-            `?client_id=${appId}` +
-            `&redirect_uri=${encodeURIComponent(redirect_uri)}` +
-            `&client_secret=${appSecret}` +
-            `&code=${code}`
+        // 1. Exchange code for short-lived token via Instagram API
+        const tokenFormData = new URLSearchParams()
+        tokenFormData.append('client_id', appId)
+        tokenFormData.append('client_secret', appSecret)
+        tokenFormData.append('grant_type', 'authorization_code')
+        tokenFormData.append('redirect_uri', redirect_uri)
+        tokenFormData.append('code', code)
 
-        const tokenResponse = await fetch(tokenUrl)
+        const tokenResponse = await fetch('https://api.instagram.com/oauth/access_token', {
+            method: 'POST',
+            body: tokenFormData,
+        })
         const tokenData = await tokenResponse.json()
 
-        if (tokenData.error) {
-            console.error('Facebook Token Error:', tokenData.error)
-            throw new Error(tokenData.error.message || tokenData.error.type)
+        if (tokenData.error_type || tokenData.error_message) {
+            console.error('Instagram Token Error:', tokenData)
+            throw new Error(tokenData.error_message || tokenData.error_type || 'Token exchange failed')
         }
 
         const shortLivedToken = tokenData.access_token
-        console.log('Short-lived token obtained. Exchanging for long-lived token...')
+        const igUserId = tokenData.user_id?.toString()
+        console.log(`Short-lived token obtained for user ${igUserId}. Exchanging for long-lived token...`)
 
         // 2. Exchange for long-lived token (60 days)
-        const longLivedUrl = `https://graph.facebook.com/${GRAPH_API_VERSION}/oauth/access_token` +
-            `?grant_type=fb_exchange_token` +
-            `&client_id=${appId}` +
+        const longLivedUrl = `https://graph.instagram.com/access_token` +
+            `?grant_type=ig_exchange_token` +
             `&client_secret=${appSecret}` +
-            `&fb_exchange_token=${shortLivedToken}`
+            `&access_token=${shortLivedToken}`
 
         const longLivedResponse = await fetch(longLivedUrl)
         const longLivedData = await longLivedResponse.json()
@@ -64,61 +66,25 @@ serve(async (req) => {
         const expiresIn = longLivedData.expires_in || 5184000 // 60 days default
         console.log('Long-lived token obtained.')
 
-        // 3. Get Facebook Pages managed by user
-        const pagesResponse = await fetch(
-            `https://graph.facebook.com/${GRAPH_API_VERSION}/me/accounts?access_token=${accessToken}`
+        // 3. Get Instagram user profile
+        const profileResponse = await fetch(
+            `https://graph.instagram.com/v22.0/me?fields=user_id,username,name,profile_picture_url,account_type&access_token=${accessToken}`
         )
-        const pagesData = await pagesResponse.json()
+        const profileData = await profileResponse.json()
 
-        if (pagesData.error) {
-            console.error('Pages API Error:', pagesData.error)
-            throw new Error(pagesData.error.message || 'Failed to fetch Facebook Pages')
+        if (profileData.error) {
+            console.error('Profile API Error:', profileData.error)
+            throw new Error(profileData.error.message || 'Failed to fetch Instagram profile')
         }
 
-        const pages = pagesData.data || []
-        if (pages.length === 0) {
-            throw new Error('No Facebook Pages found. Instagram Business accounts must be linked to a Facebook Page.')
-        }
+        const instagramUserId = profileData.user_id?.toString() || igUserId
+        const username = profileData.username || 'instagram_user'
+        const displayName = profileData.name || username
+        const profilePic = profileData.profile_picture_url || null
 
-        console.log(`Found ${pages.length} Facebook Page(s). Checking for Instagram accounts...`)
+        console.log(`Instagram account: @${username} (${instagramUserId})`)
 
-        // 4. Find Instagram Business Account linked to a Page
-        let igAccount: { id: string; username: string; name: string; profilePic: string; pageId: string; pageToken: string } | null = null
-
-        for (const page of pages) {
-            const igResponse = await fetch(
-                `https://graph.facebook.com/${GRAPH_API_VERSION}/${page.id}?fields=instagram_business_account&access_token=${accessToken}`
-            )
-            const igData = await igResponse.json()
-
-            if (igData.instagram_business_account) {
-                const igId = igData.instagram_business_account.id
-
-                // Get IG account details
-                const igInfoResponse = await fetch(
-                    `https://graph.facebook.com/${GRAPH_API_VERSION}/${igId}?fields=username,name,profile_picture_url&access_token=${accessToken}`
-                )
-                const igInfo = await igInfoResponse.json()
-
-                igAccount = {
-                    id: igId,
-                    username: igInfo.username || 'instagram_user',
-                    name: igInfo.name || igInfo.username || 'Instagram User',
-                    profilePic: igInfo.profile_picture_url || null,
-                    pageId: page.id,
-                    pageToken: page.access_token, // Page-scoped token
-                }
-                break // Use first IG account found
-            }
-        }
-
-        if (!igAccount) {
-            throw new Error('No Instagram Business/Creator account found linked to any of your Facebook Pages. Make sure your Instagram account is a Business or Creator account and is connected to a Facebook Page.')
-        }
-
-        console.log(`Instagram account: @${igAccount.username} (${igAccount.id})`)
-
-        // 5. Save to Supabase
+        // 4. Save to Supabase
         const supabaseClient = createClient(
             Deno.env.get('SUPABASE_URL') ?? '',
             Deno.env.get('SUPABASE_SERVICE_ROLE_KEY') ?? ''
@@ -129,15 +95,14 @@ serve(async (req) => {
 
         const dbPayload: Record<string, unknown> = {
             platform: 'instagram',
-            instagram_user_id: igAccount.id,
-            facebook_page_id: igAccount.pageId,
+            instagram_user_id: instagramUserId,
             access_token: accessToken,
-            refresh_token: null, // Facebook uses token exchange, not refresh_token
-            scope: 'instagram_basic,instagram_content_publish,pages_read_engagement,pages_show_list',
+            refresh_token: null,
+            scope: 'instagram_business_basic,instagram_business_content_publish,instagram_business_manage_messages',
             expires_at: expiresAt.toISOString(),
-            username: igAccount.username,
-            display_name: igAccount.name,
-            profile_photo_url: igAccount.profilePic,
+            username: username,
+            display_name: displayName,
+            profile_photo_url: profilePic,
             is_active: true,
             updated_at: now.toISOString(),
         }
@@ -152,7 +117,7 @@ serve(async (req) => {
         const { data: existing } = await supabaseClient
             .from('accounts')
             .select('id')
-            .eq('instagram_user_id', igAccount.id)
+            .eq('instagram_user_id', instagramUserId)
             .eq('platform', 'instagram')
             .maybeSingle()
 
@@ -186,7 +151,7 @@ serve(async (req) => {
 
         console.log('Instagram account saved:', account?.id)
 
-        // 6. Assign proxy from pool
+        // 5. Assign proxy from pool
         if (account?.id) {
             try {
                 await supabaseClient.rpc('assign_proxy_for_platform', {
