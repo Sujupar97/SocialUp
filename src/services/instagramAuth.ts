@@ -1,7 +1,7 @@
 import { supabase } from './supabase';
 
 const INSTAGRAM_APP_ID = import.meta.env.VITE_INSTAGRAM_APP_ID || '';
-const REDIRECT_URI = 'https://socialfullup.netlify.app';
+const REDIRECT_URI = 'https://socialfullup.netlify.app/';
 const SCOPES = 'instagram_business_basic,instagram_business_content_publish,instagram_business_manage_messages';
 
 /**

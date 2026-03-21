@@ -33,15 +33,19 @@ serve(async (req) => {
         tokenFormData.append('redirect_uri', redirect_uri)
         tokenFormData.append('code', code)
 
+        console.log(`Token exchange with redirect_uri: ${redirect_uri}, code length: ${code?.length}`)
+
         const tokenResponse = await fetch('https://api.instagram.com/oauth/access_token', {
             method: 'POST',
             body: tokenFormData,
         })
         const tokenData = await tokenResponse.json()
+        console.log('Token response status:', tokenResponse.status, 'data:', JSON.stringify(tokenData))
 
-        if (tokenData.error_type || tokenData.error_message) {
+        if (!tokenResponse.ok || tokenData.error_type || tokenData.error_message || tokenData.error) {
             console.error('Instagram Token Error:', tokenData)
-            throw new Error(tokenData.error_message || tokenData.error_type || 'Token exchange failed')
+            const errMsg = tokenData.error_message || tokenData.error?.message || tokenData.error_type || tokenData.error || 'Token exchange failed'
+            throw new Error(errMsg)
         }
 
         const shortLivedToken = tokenData.access_token
