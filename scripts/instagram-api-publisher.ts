@@ -3,21 +3,21 @@
  * Publishes videos as Instagram Reels via Instagram Graph API
  *
  * Flow:
- * 1. Upload video to public URL (Supabase Storage)
+ * 1. Make video accessible via public URL (Express server)
  * 2. POST container creation with video_url
  * 3. Poll container status until FINISHED
  * 4. POST media_publish
  *
- * Requires: access_token with instagram_content_publish scope
- * Account must be Business/Creator linked to Facebook Page
+ * Requires: access_token with instagram_business_content_publish scope
+ * Uses Instagram Business Login (graph.instagram.com)
  */
 
 import * as fs from 'fs';
-import { createClient } from '@supabase/supabase-js';
-import { SUPABASE_CONFIG } from './config';
+import * as path from 'path';
+import { SERVER_CONFIG } from './config';
 
 const GRAPH_API_VERSION = 'v22.0';
-const GRAPH_API_BASE = `https://graph.facebook.com/${GRAPH_API_VERSION}`;
+const GRAPH_API_BASE = `https://graph.instagram.com/${GRAPH_API_VERSION}`;
 const POLL_INTERVAL_MS = 5000; // 5 seconds
 const MAX_POLL_ATTEMPTS = 60; // 5 minutes max wait
 
@@ -25,7 +25,7 @@ export interface InstagramPublishOptions {
     videoPath: string;
     caption: string;          // max 2200 chars
     accessToken: string;
-    instagramUserId: string;  // IG Business Account ID
+    instagramUserId: string;  // App-scoped IG user ID (from /me endpoint `id` field)
     coverUrl?: string;        // custom thumbnail
     locationId?: string;
     shareToFeed?: boolean;    // default true
@@ -42,26 +42,14 @@ function sleep(ms: number): Promise<void> {
 }
 
 /**
- * Upload video to Supabase Storage and return public URL
+ * Get public URL for a video file served by the automation server.
+ * The video must be in the processed/ or uploads/ directory.
+ * In production (VPS), SERVER_PUBLIC_URL points to the public IP/domain.
  */
-async function uploadToStorage(videoPath: string): Promise<string> {
-    const supabase = createClient(SUPABASE_CONFIG.url, SUPABASE_CONFIG.anonKey);
-    const fileName = `ig-reels/${Date.now()}-${Math.random().toString(36).slice(2)}.mp4`;
-    const videoBuffer = fs.readFileSync(videoPath);
-
-    const { error } = await supabase.storage
-        .from('videos')
-        .upload(fileName, videoBuffer, {
-            contentType: 'video/mp4',
-            upsert: false,
-        });
-
-    if (error) {
-        throw new Error(`Storage upload failed: ${error.message}`);
-    }
-
-    const { data: urlData } = supabase.storage.from('videos').getPublicUrl(fileName);
-    return urlData.publicUrl;
+function getVideoPublicUrl(videoPath: string): string {
+    const fileName = path.basename(videoPath);
+    const publicUrl = process.env.SERVER_PUBLIC_URL || `http://localhost:${SERVER_CONFIG.port}`;
+    return `${publicUrl}/api/ig-videos/${fileName}`;
 }
 
 /**
@@ -96,6 +84,7 @@ async function createMediaContainer(
     );
 
     const data = await response.json() as Record<string, any>;
+    console.log(`  Container response: ${JSON.stringify(data)}`);
 
     if (data.error) {
         return { error: `Container creation failed: ${data.error.message} (code: ${data.error.code})` };
@@ -118,7 +107,7 @@ async function pollContainerStatus(
 
     for (let attempt = 1; attempt <= MAX_POLL_ATTEMPTS; attempt++) {
         const response = await fetch(
-            `${GRAPH_API_BASE}/${containerId}?fields=status_code,status&access_token=${accessToken}`
+            `${GRAPH_API_BASE}/${containerId}?fields=status_code,status,id&access_token=${accessToken}`
         );
         const data = await response.json() as Record<string, any>;
 
@@ -171,22 +160,6 @@ async function publishContainer(
 }
 
 /**
- * Clean up uploaded video from Storage after publishing
- */
-async function cleanupStorage(publicUrl: string): Promise<void> {
-    try {
-        const supabase = createClient(SUPABASE_CONFIG.url, SUPABASE_CONFIG.anonKey);
-        // Extract path from URL: .../storage/v1/object/public/videos/ig-reels/...
-        const match = publicUrl.match(/\/videos\/(.+)$/);
-        if (match) {
-            await supabase.storage.from('videos').remove([match[1]]);
-        }
-    } catch {
-        // Non-fatal: storage cleanup is best-effort
-    }
-}
-
-/**
  * Main publish function — orchestrates Instagram Reel publishing
  */
 export async function publishToInstagramAPI(options: InstagramPublishOptions): Promise<InstagramPublishResult> {
@@ -207,60 +180,49 @@ export async function publishToInstagramAPI(options: InstagramPublishOptions): P
     const fileSize = fs.statSync(videoPath).size;
     console.log(`Publishing to Instagram: ${videoPath} (${Math.round(fileSize / 1024 / 1024)}MB)`);
 
-    // Step 0: Upload video to public URL
-    console.log('  Step 0: Uploading video to Supabase Storage...');
-    let publicUrl: string;
-    try {
-        publicUrl = await uploadToStorage(videoPath);
-    } catch (err: any) {
-        return { success: false, error: `Storage upload failed: ${err.message}` };
+    // Get public URL for the video (served by Express server)
+    const videoUrl = getVideoPublicUrl(videoPath);
+    console.log(`  Video URL: ${videoUrl}`);
+
+    // Step 1: Create container
+    console.log('  Step 1: Creating media container...');
+    const containerResult = await createMediaContainer(
+        instagramUserId,
+        accessToken,
+        videoUrl,
+        caption,
+        { coverUrl: options.coverUrl, locationId: options.locationId, shareToFeed: options.shareToFeed }
+    );
+
+    if ('error' in containerResult) {
+        return { success: false, error: containerResult.error };
     }
-    console.log(`  Video URL: ${publicUrl}`);
 
-    try {
-        // Step 1: Create container
-        console.log('  Step 1: Creating media container...');
-        const containerResult = await createMediaContainer(
-            instagramUserId,
-            accessToken,
-            publicUrl,
-            caption,
-            { coverUrl: options.coverUrl, locationId: options.locationId, shareToFeed: options.shareToFeed }
-        );
+    console.log(`  Container ID: ${containerResult.containerId}`);
 
-        if ('error' in containerResult) {
-            return { success: false, error: containerResult.error };
-        }
+    // Step 2: Poll until ready
+    console.log('  Step 2: Waiting for video processing...');
+    const pollResult = await pollContainerStatus(containerResult.containerId, accessToken);
 
-        console.log(`  Container ID: ${containerResult.containerId}`);
-
-        // Step 2: Poll until ready
-        console.log('  Step 2: Waiting for video processing...');
-        const pollResult = await pollContainerStatus(containerResult.containerId, accessToken);
-
-        if (!pollResult.ready) {
-            return { success: false, error: pollResult.error || 'Processing failed' };
-        }
-
-        // Step 3: Publish
-        console.log('  Step 3: Publishing Reel...');
-        const publishResult = await publishContainer(
-            instagramUserId,
-            containerResult.containerId,
-            accessToken
-        );
-
-        if (publishResult.success) {
-            console.log(`  Published as Instagram Reel! Media ID: ${publishResult.mediaId}`);
-        } else {
-            console.log(`  Publish failed: ${publishResult.error}`);
-        }
-
-        return publishResult;
-    } finally {
-        // Clean up storage regardless of success/failure
-        await cleanupStorage(publicUrl);
+    if (!pollResult.ready) {
+        return { success: false, error: pollResult.error || 'Processing failed' };
     }
+
+    // Step 3: Publish
+    console.log('  Step 3: Publishing Reel...');
+    const publishResult = await publishContainer(
+        instagramUserId,
+        containerResult.containerId,
+        accessToken
+    );
+
+    if (publishResult.success) {
+        console.log(`  Published as Instagram Reel! Media ID: ${publishResult.mediaId}`);
+    } else {
+        console.log(`  Publish failed: ${publishResult.error}`);
+    }
+
+    return publishResult;
 }
 
 // CLI entry point

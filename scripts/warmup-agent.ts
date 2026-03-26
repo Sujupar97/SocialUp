@@ -3,35 +3,35 @@
  * Automated interaction bot that simulates organic user behavior
  * to keep accounts healthy and avoid spam detection.
  *
- * Uses Playwright with stealth techniques, routed through each account's
+ * Uses Playwright with stealth plugin, routed through each account's
  * assigned proxy. Performs randomized actions: scroll, watch, like,
  * comment, save, follow.
  *
  * Each session runs 5-15 minutes with 10-30 actions.
+ * Includes login detection, verification challenge handling, and
+ * per-action limits to avoid platform bans.
  */
 
-import { chromium, BrowserContext, Page } from 'playwright';
+import { chromium } from 'playwright-extra';
+import StealthPlugin from 'puppeteer-extra-plugin-stealth';
+import { BrowserContext, Page } from 'playwright';
 import * as fs from 'fs';
 import * as path from 'path';
 import { createClient, SupabaseClient } from '@supabase/supabase-js';
 import { GoogleGenerativeAI } from '@google/generative-ai';
 import { SUPABASE_CONFIG, GEMINI_CONFIG, PATHS } from './config';
+import { generateFingerprint, STEALTH_BROWSER_ARGS } from './warmup/anti-detection';
+import { autoLogin, LoginCredentials } from './warmup/auto-login';
+import { createEmailVerifier, EmailVerifier } from './email-verifier';
 import 'dotenv/config';
 
-// Anti-detection browser args (from tiktok-publisher.ts)
-const BROWSER_ARGS = [
-    '--disable-blink-features=AutomationControlled',
-    '--disable-features=IsolateOrigins,site-per-process',
-    '--disable-site-isolation-trials',
-    '--disable-web-security',
-    '--no-sandbox',
-    '--disable-setuid-sandbox',
-];
+// Initialize stealth plugin
+chromium.use(StealthPlugin());
 
 // Platform URLs
 const PLATFORM_URLS: Record<string, { home: string; feed: string }> = {
     tiktok: { home: 'https://www.tiktok.com', feed: 'https://www.tiktok.com/foryou' },
-    instagram: { home: 'https://www.instagram.com', feed: 'https://www.instagram.com' },
+    instagram: { home: 'https://www.instagram.com', feed: 'https://www.instagram.com/reels/' },
     youtube: { home: 'https://www.youtube.com', feed: 'https://www.youtube.com/shorts' },
 };
 
@@ -46,6 +46,13 @@ const ACTION_WEIGHTS: Record<string, number> = {
     visit_profile: 5,
 };
 
+// Default per-session action limits (configurable via app_settings)
+const DEFAULT_ACTION_LIMITS: Record<string, Record<string, number>> = {
+    tiktok: { like: 15, follow: 5, comment: 3, save: 10 },
+    instagram: { like: 15, follow: 5, comment: 2, save: 10 },
+    youtube: { like: 20, follow: 5, comment: 0, save: 0 },
+};
+
 export interface WarmupConfig {
     accountId: string;
     platform: 'tiktok' | 'instagram' | 'youtube';
@@ -53,9 +60,11 @@ export interface WarmupConfig {
     proxyUrl?: string;
     proxyUsername?: string;
     proxyPassword?: string;
+    countryCode?: string;
     minDurationSec: number;
     maxDurationSec: number;
     headless: boolean;
+    actionLimits?: Record<string, number>;
 }
 
 export interface WarmupSessionResult {
@@ -64,6 +73,8 @@ export interface WarmupSessionResult {
     actionsPerformed: number;
     durationSec: number;
     error?: string;
+    notLoggedIn?: boolean;
+    verificationNeeded?: string;
 }
 
 interface ActionResult {
@@ -72,6 +83,13 @@ interface ActionResult {
     durationMs?: number;
     success: boolean;
     metadata?: Record<string, unknown>;
+}
+
+export interface VerificationChallenge {
+    type: 'email_code' | 'sms_code' | 'captcha' | 'unknown';
+    platform: string;
+    inputSelector?: string;
+    submitSelector?: string;
 }
 
 // Humanized helpers
@@ -99,10 +117,13 @@ export class WarmupAgent {
     private sessionId: string = '';
     private actions: ActionResult[] = [];
     private startTime: number = 0;
+    private actionCounts: Record<string, number> = {};
+    private actionLimits: Record<string, number>;
 
     constructor(config: WarmupConfig) {
         this.config = config;
         this.supabase = createClient(SUPABASE_CONFIG.url, SUPABASE_CONFIG.anonKey);
+        this.actionLimits = config.actionLimits || DEFAULT_ACTION_LIMITS[config.platform] || {};
     }
 
     async runSession(): Promise<WarmupSessionResult> {
@@ -135,19 +156,93 @@ export class WarmupAgent {
             console.log(`[Warmup] Starting session for @${this.config.username} (${this.config.platform}) — target ${Math.round(targetDuration / 1000)}s`);
 
             context = await this.launchBrowser();
-            const page = await context.newPage();
+            const page = context.pages()[0] || await context.newPage();
 
             // Navigate to platform feed
             const urls = PLATFORM_URLS[this.config.platform];
             await page.goto(urls.feed, { waitUntil: 'domcontentloaded', timeout: 30000 });
             await sleep(humanDelay(3000, 5000));
 
+            // Check if logged in
+            let loggedIn = await this.isLoggedIn(page);
+            if (!loggedIn) {
+                console.log(`[Warmup] @${this.config.username}: NOT logged in — attempting auto-login...`);
+
+                // Fetch credentials from DB
+                const credentials = await this.getLoginCredentials();
+                if (credentials) {
+                    const loginResult = await autoLogin(page, credentials);
+
+                    if (loginResult.success) {
+                        console.log(`[Warmup] @${this.config.username}: Auto-login successful ✓`);
+                        // Update last_login_at and reset failures
+                        await this.supabase.from('accounts').update({
+                            last_login_at: new Date().toISOString(),
+                            login_failures: 0,
+                            verification_status: 'ok',
+                        }).eq('id', this.config.accountId);
+
+                        // Navigate back to feed after login
+                        await page.goto(urls.feed, { waitUntil: 'domcontentloaded', timeout: 30000 });
+                        await sleep(humanDelay(3000, 5000));
+                        loggedIn = true;
+                    } else if (loginResult.needsVerification) {
+                        console.log(`[Warmup] @${this.config.username}: Login needs ${loginResult.verificationType}`);
+                        const status = loginResult.verificationType === 'email_code' ? 'needs_email'
+                            : loginResult.verificationType === 'sms_code' ? 'needs_sms'
+                            : 'needs_captcha';
+
+                        await this.supabase.from('accounts').update({
+                            verification_status: status,
+                        }).eq('id', this.config.accountId);
+                    } else {
+                        console.log(`[Warmup] @${this.config.username}: Auto-login failed: ${loginResult.error}`);
+                        // Increment login failures
+                        await this.supabase.rpc('increment_login_failures', {
+                            account_id_param: this.config.accountId,
+                        }).catch(() => {
+                            // RPC might not exist yet, use direct update
+                            this.supabase.from('accounts').update({
+                                login_failures: (this.config as any)._loginFailures + 1 || 1,
+                            }).eq('id', this.config.accountId);
+                        });
+                    }
+                } else {
+                    console.log(`[Warmup] @${this.config.username}: No credentials stored — cannot auto-login`);
+                }
+
+                if (!loggedIn) {
+                    await this.supabase.from('warmup_sessions').update({
+                        status: 'failed',
+                        ended_at: new Date().toISOString(),
+                        session_duration_sec: Math.round((Date.now() - this.startTime) / 1000),
+                        error_message: 'not_logged_in',
+                    }).eq('id', this.sessionId);
+
+                    return {
+                        success: false,
+                        sessionId: this.sessionId,
+                        actionsPerformed: 0,
+                        durationSec: Math.round((Date.now() - this.startTime) / 1000),
+                        error: 'not_logged_in',
+                        notLoggedIn: true,
+                    };
+                }
+            }
+
+            console.log(`[Warmup] @${this.config.username}: Logged in ✓ — performing actions`);
+
             // Perform actions until time runs out
             while (Date.now() - this.startTime < targetDuration) {
-                const action = pickWeightedAction();
+                const action = this.pickAllowedAction();
                 try {
                     const result = await this.performAction(page, action);
                     this.actions.push(result);
+
+                    // Track action counts for limits
+                    if (result.success) {
+                        this.actionCounts[action] = (this.actionCounts[action] || 0) + 1;
+                    }
 
                     // Log action to DB
                     await this.supabase.from('warmup_actions').insert({
@@ -159,11 +254,34 @@ export class WarmupAgent {
                         metadata: result.metadata || {},
                     });
 
-                    // Human-like pause between actions
+                    // Check for verification challenges after each action
+                    const challenge = await this.detectVerification(page);
+                    if (challenge) {
+                        console.log(`[Warmup] @${this.config.username}: Verification challenge detected (${challenge.type})`);
+                        const handled = await this.handleVerification(page, challenge);
+                        if (!handled) {
+                            // Mark and abort session
+                            const status = challenge.type === 'email_code' ? 'needs_email'
+                                : challenge.type === 'sms_code' ? 'needs_sms'
+                                : challenge.type === 'captcha' ? 'needs_captcha'
+                                : 'needs_email';
+
+                            await this.supabase.from('accounts').update({
+                                verification_status: status,
+                            }).eq('id', this.config.accountId);
+
+                            throw new Error(`verification_needed:${challenge.type}`);
+                        }
+                    }
+
+                    // Human-like pause between actions (2-8s)
                     await sleep(humanDelay(2000, 8000));
                 } catch (err: any) {
+                    if (err.message?.startsWith('verification_needed:')) {
+                        throw err; // Re-throw verification errors
+                    }
                     console.log(`[Warmup] Action ${action} failed: ${err.message}`);
-                    // Continue with next action — don't break the session
+                    // Continue with next action
                 }
             }
 
@@ -186,6 +304,7 @@ export class WarmupAgent {
             }).eq('id', this.sessionId);
 
             console.log(`[Warmup] Session complete: ${this.actions.length} actions in ${durationSec}s (${successCount} successful)`);
+            console.log(`[Warmup] Actions: ${JSON.stringify(this.actionCounts)}`);
 
             return {
                 success: true,
@@ -195,6 +314,9 @@ export class WarmupAgent {
             };
         } catch (err: any) {
             const durationSec = Math.round((Date.now() - this.startTime) / 1000);
+            const verificationNeeded = err.message?.startsWith('verification_needed:')
+                ? err.message.split(':')[1]
+                : undefined;
 
             await this.supabase.from('warmup_sessions').update({
                 status: 'failed',
@@ -211,6 +333,7 @@ export class WarmupAgent {
                 actionsPerformed: this.actions.length,
                 durationSec,
                 error: err.message,
+                verificationNeeded,
             };
         } finally {
             if (context) {
@@ -218,6 +341,10 @@ export class WarmupAgent {
             }
         }
     }
+
+    // ========================================
+    // Browser launch with stealth + fingerprint
+    // ========================================
 
     private async launchBrowser(): Promise<BrowserContext> {
         const sessionDir = path.join(
@@ -229,13 +356,16 @@ export class WarmupAgent {
             fs.mkdirSync(sessionDir, { recursive: true });
         }
 
+        // Generate consistent fingerprint for this account
+        const fingerprint = generateFingerprint(this.config.username, this.config.countryCode);
+
         const launchOptions: any = {
             headless: this.config.headless,
-            args: [...BROWSER_ARGS],
-            viewport: { width: 1280, height: 720 },
-            userAgent: 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36',
-            locale: 'es-CO',
-            timezoneId: 'America/Bogota',
+            args: [...STEALTH_BROWSER_ARGS],
+            viewport: fingerprint.viewport,
+            userAgent: fingerprint.userAgent,
+            locale: fingerprint.locale,
+            timezoneId: fingerprint.timezoneId,
         };
 
         // Add proxy if configured
@@ -247,12 +377,269 @@ export class WarmupAgent {
 
         // Authenticate proxy if needed
         if (this.config.proxyUsername && this.config.proxyPassword) {
-            const page = context.pages()[0] || await context.newPage();
-            await page.route('**/*', async route => route.continue());
+            await context.route('**/*', async (route) => {
+                await route.continue();
+            });
+            // Set HTTP credentials for proxy auth
+            await context.setHTTPCredentials({
+                username: this.config.proxyUsername,
+                password: this.config.proxyPassword,
+            });
         }
 
         return context;
     }
+
+    // ========================================
+    // Login detection per platform
+    // ========================================
+
+    private async isLoggedIn(page: Page): Promise<boolean> {
+        try {
+            if (this.config.platform === 'tiktok') {
+                // If login button is visible, user is NOT logged in
+                const loginBtn = await page.locator('[data-e2e="top-login-button"]').count();
+                return loginBtn === 0;
+            } else if (this.config.platform === 'instagram') {
+                // If username input visible, we're on login page
+                const loginInput = await page.locator('input[name="username"]').count();
+                if (loginInput > 0) return false;
+                // Check for navigation elements that only show when logged in
+                const navLinks = await page.locator('nav a[href*="/direct/"], nav svg[aria-label]').count();
+                return navLinks > 0;
+            } else if (this.config.platform === 'youtube') {
+                // Avatar button means logged in; "Sign in" link means not
+                const avatar = await page.locator('button#avatar-btn, img#img[alt="Avatar"]').count();
+                if (avatar > 0) return true;
+                const signIn = await page.locator('a[aria-label="Sign in"], a[href*="accounts.google.com"]').count();
+                return signIn === 0;
+            }
+            return false;
+        } catch {
+            return false;
+        }
+    }
+
+    // ========================================
+    // Verification detection per platform
+    // ========================================
+
+    private async detectVerification(page: Page): Promise<VerificationChallenge | null> {
+        try {
+            if (this.config.platform === 'tiktok') {
+                // TikTok verification dialog
+                const codeInput = await page.locator(
+                    'input[placeholder*="code"], input[placeholder*="código"], ' +
+                    'input[placeholder*="Code"], input[type="tel"][maxlength="6"]'
+                ).count();
+                const verifyText = await page.locator(
+                    'div:has-text("verification code"), div:has-text("código de verificación"), ' +
+                    'div:has-text("Verify your identity"), div:has-text("Verificar")'
+                ).first().isVisible().catch(() => false);
+
+                if (codeInput > 0 || verifyText) {
+                    return {
+                        type: 'email_code',
+                        platform: 'tiktok',
+                        inputSelector: 'input[placeholder*="code"], input[placeholder*="código"], input[type="tel"][maxlength="6"]',
+                        submitSelector: 'button[type="submit"], button:has-text("Verify"), button:has-text("Verificar")',
+                    };
+                }
+
+                // CAPTCHA detection
+                const captcha = await page.locator(
+                    'iframe[src*="captcha"], div[id*="captcha"], #captcha-verify'
+                ).count();
+                if (captcha > 0) {
+                    return { type: 'captcha', platform: 'tiktok' };
+                }
+            } else if (this.config.platform === 'instagram') {
+                // Instagram security checkpoint
+                const checkpoint = page.url().includes('challenge') || page.url().includes('checkpoint');
+                const confirmText = await page.locator(
+                    'div:has-text("Confirm your identity"), div:has-text("Confirma tu identidad"), ' +
+                    'div:has-text("suspicious activity"), div:has-text("actividad sospechosa")'
+                ).first().isVisible().catch(() => false);
+
+                if (checkpoint || confirmText) {
+                    const hasCodeInput = await page.locator('input[name="security_code"], input[placeholder*="code"]').count();
+                    if (hasCodeInput > 0) {
+                        return {
+                            type: 'email_code',
+                            platform: 'instagram',
+                            inputSelector: 'input[name="security_code"], input[placeholder*="code"]',
+                            submitSelector: 'button[type="submit"], button:has-text("Confirm"), button:has-text("Confirmar")',
+                        };
+                    }
+                    return { type: 'unknown', platform: 'instagram' };
+                }
+            } else if (this.config.platform === 'youtube') {
+                // Google verification challenge
+                const challengeFrame = await page.locator(
+                    'iframe[src*="accounts.google.com/v3/signin/challenge"]'
+                ).count();
+                const verifyUrl = page.url().includes('accounts.google.com') && page.url().includes('challenge');
+
+                if (challengeFrame > 0 || verifyUrl) {
+                    return { type: 'email_code', platform: 'youtube' };
+                }
+            }
+
+            return null;
+        } catch {
+            return null;
+        }
+    }
+
+    // ========================================
+    // Verification handling
+    // ========================================
+
+    private async handleVerification(page: Page, challenge: VerificationChallenge): Promise<boolean> {
+        console.log(`[Warmup] Verification challenge: ${challenge.type} on ${challenge.platform}`);
+
+        // Log the verification event
+        await this.supabase.from('warmup_actions').insert({
+            session_id: this.sessionId,
+            action_type: 'verification_detected',
+            success: false,
+            metadata: { challenge_type: challenge.type, platform: challenge.platform },
+        });
+
+        // Only email codes can be handled automatically
+        if (challenge.type !== 'email_code') {
+            console.log(`[Warmup] Cannot auto-resolve ${challenge.type} — needs manual intervention`);
+            return false;
+        }
+
+        // Get account email
+        const { data: account } = await this.supabase
+            .from('accounts')
+            .select('email_address')
+            .eq('id', this.config.accountId)
+            .single();
+
+        if (!account?.email_address) {
+            console.log('[Warmup] No email configured for this account — cannot verify');
+            return false;
+        }
+
+        // Click "Send code" button if visible
+        const sendCodeBtn = await page.$(
+            'button:has-text("Send"), button:has-text("Enviar"), ' +
+            'button:has-text("Send code"), button:has-text("Enviar código"), ' +
+            'a:has-text("Send"), a:has-text("Enviar")'
+        ).catch(() => null);
+
+        if (sendCodeBtn) {
+            await sendCodeBtn.click();
+            console.log('[Warmup] Clicked "Send code" button');
+            await sleep(humanDelay(3000, 5000));
+        }
+
+        // Wait for verification code via email
+        const verifier = createEmailVerifier('supabase');
+        const code = await verifier.getVerificationCode(
+            account.email_address,
+            this.config.platform,
+            120000 // 2 minute timeout
+        );
+
+        if (!code) {
+            console.log('[Warmup] Verification code not received within timeout');
+            return false;
+        }
+
+        console.log(`[Warmup] Got verification code: ${code}`);
+
+        // Type the code
+        if (challenge.inputSelector) {
+            const input = await page.$(challenge.inputSelector).catch(() => null);
+            if (input) {
+                await input.click();
+                await sleep(humanDelay(300, 600));
+                await page.keyboard.type(code, { delay: humanDelay(80, 150) });
+                await sleep(humanDelay(1000, 2000));
+            }
+        }
+
+        // Submit
+        if (challenge.submitSelector) {
+            const submitBtn = await page.$(challenge.submitSelector).catch(() => null);
+            if (submitBtn) {
+                await submitBtn.click();
+            } else {
+                await page.keyboard.press('Enter');
+            }
+        } else {
+            await page.keyboard.press('Enter');
+        }
+
+        await sleep(humanDelay(3000, 5000));
+
+        // Log success
+        await this.supabase.from('warmup_actions').insert({
+            session_id: this.sessionId,
+            action_type: 'verification_resolved',
+            success: true,
+            metadata: { challenge_type: challenge.type },
+        });
+
+        // Reset verification status
+        await this.supabase.from('accounts').update({
+            verification_status: 'ok',
+        }).eq('id', this.config.accountId);
+
+        console.log('[Warmup] Verification code submitted successfully ✓');
+        return true;
+    }
+
+    // ========================================
+    // Credential fetching for auto-login
+    // ========================================
+
+    private async getLoginCredentials(): Promise<LoginCredentials | null> {
+        const { data } = await this.supabase
+            .from('accounts')
+            .select('email_address, login_password, username')
+            .eq('id', this.config.accountId)
+            .single();
+
+        if (!data?.email_address || !data?.login_password) {
+            return null;
+        }
+
+        return {
+            email: data.email_address,
+            password: data.login_password,
+            platform: this.config.platform,
+            username: data.username,
+        };
+    }
+
+    // ========================================
+    // Action selection with limits
+    // ========================================
+
+    private pickAllowedAction(): string {
+        // Try up to 10 times to find an action within limits
+        for (let i = 0; i < 10; i++) {
+            const action = pickWeightedAction();
+            const limit = this.actionLimits[action];
+            const count = this.actionCounts[action] || 0;
+
+            // No limit defined or not yet reached
+            if (limit === undefined || count < limit) {
+                return action;
+            }
+        }
+        // Fallback to scroll (always allowed, no limit)
+        return 'scroll';
+    }
+
+    // ========================================
+    // Action dispatcher
+    // ========================================
 
     private async performAction(page: Page, action: string): Promise<ActionResult> {
         switch (action) {
@@ -284,19 +671,15 @@ export class WarmupAgent {
         const watchDuration = humanDelay(5000, 30000);
 
         if (this.config.platform === 'tiktok') {
-            // TikTok: videos are full-screen, just wait
             await sleep(watchDuration);
         } else if (this.config.platform === 'youtube') {
             // YouTube Shorts: scroll to next short and watch
             await page.mouse.wheel(0, 500);
             await sleep(watchDuration);
         } else {
-            // Instagram: click on a post in feed if visible
-            const post = await page.$('article video, article img').catch(() => null);
-            if (post) await post.click().catch(() => {});
+            // Instagram Reels: scroll to next reel and watch
+            await page.mouse.wheel(0, 500);
             await sleep(watchDuration);
-            // Press escape to close post modal
-            await page.keyboard.press('Escape').catch(() => {});
         }
 
         return { type: 'watch', success: true, durationMs: watchDuration, targetUrl: page.url() };
@@ -306,22 +689,25 @@ export class WarmupAgent {
         let liked = false;
 
         if (this.config.platform === 'tiktok') {
-            // TikTok: double-tap or click heart icon
             const heartBtn = await page.$('[data-e2e="like-icon"], [data-e2e="browse-like-icon"]').catch(() => null);
             if (heartBtn) {
                 await heartBtn.click();
                 liked = true;
             }
         } else if (this.config.platform === 'instagram') {
-            // Instagram: double-tap or click heart
-            const likeBtn = await page.$('svg[aria-label="Me gusta"], svg[aria-label="Like"]').catch(() => null);
+            const likeBtn = await page.$(
+                'svg[aria-label="Me gusta"], svg[aria-label="Like"], ' +
+                'span[class*="like"] svg, div[role="button"] svg[aria-label="Me gusta"]'
+            ).catch(() => null);
             if (likeBtn) {
                 await likeBtn.click();
                 liked = true;
             }
         } else if (this.config.platform === 'youtube') {
-            // YouTube: click like button
-            const likeBtn = await page.$('#like-button button, like-button-view-model button').catch(() => null);
+            const likeBtn = await page.$(
+                '#like-button button, like-button-view-model button, ' +
+                'button[aria-label*="like"], button[aria-label*="gusta"]'
+            ).catch(() => null);
             if (likeBtn) {
                 await likeBtn.click();
                 liked = true;
@@ -333,7 +719,11 @@ export class WarmupAgent {
     }
 
     private async postComment(page: Page): Promise<ActionResult> {
-        // Generate a short, organic comment with Gemini
+        // YouTube comments are complex, skip entirely
+        if (this.config.platform === 'youtube') {
+            return { type: 'comment', success: false, metadata: { reason: 'youtube_comments_skipped' } };
+        }
+
         const comment = await this.generateComment();
         if (!comment) return { type: 'comment', success: false, metadata: { reason: 'no_comment_generated' } };
 
@@ -346,7 +736,6 @@ export class WarmupAgent {
                 await sleep(humanDelay(500, 1000));
                 await page.keyboard.type(comment, { delay: humanDelay(50, 120) });
                 await sleep(humanDelay(500, 1000));
-                // Post comment
                 const postBtn = await page.$('[data-e2e="comment-post"], [data-e2e="browse-comment-post"]').catch(() => null);
                 if (postBtn) {
                     await postBtn.click();
@@ -354,21 +743,21 @@ export class WarmupAgent {
                 }
             }
         } else if (this.config.platform === 'instagram') {
-            const commentArea = await page.$('textarea[aria-label="Añade un comentario..."], textarea[aria-label="Add a comment…"]').catch(() => null);
+            const commentArea = await page.$(
+                'textarea[aria-label="Añade un comentario..."], textarea[aria-label="Add a comment…"], ' +
+                'textarea[placeholder*="comentario"], textarea[placeholder*="comment"]'
+            ).catch(() => null);
             if (commentArea) {
                 await commentArea.click();
                 await sleep(humanDelay(500, 1000));
                 await page.keyboard.type(comment, { delay: humanDelay(50, 120) });
-                await sleep(humanDelay(500, 1000));
-                const postBtn = await page.$('button:has-text("Publicar"), button:has-text("Post")').catch(() => null);
+                await sleep(humanDelay(800, 1500));
+                const postBtn = await page.$('button:has-text("Publicar"), button:has-text("Post"), div[role="button"]:has-text("Publicar")').catch(() => null);
                 if (postBtn) {
                     await postBtn.click();
                     commented = true;
                 }
             }
-        } else if (this.config.platform === 'youtube') {
-            // YouTube comments require more interaction, skip for now
-            return { type: 'comment', success: false, metadata: { reason: 'youtube_comments_complex' } };
         }
 
         await sleep(humanDelay(1000, 2000));
@@ -379,19 +768,22 @@ export class WarmupAgent {
         let saved = false;
 
         if (this.config.platform === 'tiktok') {
-            const saveBtn = await page.$('[data-e2e="undefined-icon"], [data-e2e="browse-save-icon"]').catch(() => null);
+            const saveBtn = await page.$('[data-e2e="browse-save-icon"], [data-e2e="video-save"]').catch(() => null);
             if (saveBtn) {
                 await saveBtn.click();
                 saved = true;
             }
         } else if (this.config.platform === 'instagram') {
-            const saveBtn = await page.$('svg[aria-label="Guardar"], svg[aria-label="Save"]').catch(() => null);
+            const saveBtn = await page.$(
+                'svg[aria-label="Guardar"], svg[aria-label="Save"], ' +
+                'div[role="button"] svg[aria-label="Guardar"]'
+            ).catch(() => null);
             if (saveBtn) {
                 await saveBtn.click();
                 saved = true;
             }
         }
-        // YouTube doesn't have a save equivalent in Shorts
+        // YouTube Shorts doesn't have a save/bookmark
 
         await sleep(humanDelay(500, 1500));
         return { type: 'save', success: saved, targetUrl: page.url() };
@@ -407,13 +799,13 @@ export class WarmupAgent {
                 followed = true;
             }
         } else if (this.config.platform === 'instagram') {
-            const followBtn = await page.$('button:has-text("Seguir"):not(:has-text("Siguiendo"))').catch(() => null);
+            const followBtn = await page.$('button:has-text("Seguir"):not(:has-text("Siguiendo")), button:has-text("Follow"):not(:has-text("Following"))').catch(() => null);
             if (followBtn) {
                 await followBtn.click();
                 followed = true;
             }
         } else if (this.config.platform === 'youtube') {
-            const subscribeBtn = await page.$('button:has-text("Suscribirse"):not(:has-text("Suscrito"))').catch(() => null);
+            const subscribeBtn = await page.$('button:has-text("Suscribirse"):not(:has-text("Suscrito")), button:has-text("Subscribe"):not(:has-text("Subscribed"))').catch(() => null);
             if (subscribeBtn) {
                 await subscribeBtn.click();
                 followed = true;
@@ -436,9 +828,18 @@ export class WarmupAgent {
                 await page.goBack();
             }
         } else if (this.config.platform === 'instagram') {
-            const usernameLink = await page.$('article a[role="link"] span').catch(() => null);
+            const usernameLink = await page.$('article a[role="link"] span, header a[role="link"]').catch(() => null);
             if (usernameLink) {
                 await usernameLink.click();
+                await sleep(humanDelay(3000, 8000));
+                visited = true;
+                await page.goBack();
+            }
+        } else if (this.config.platform === 'youtube') {
+            // Click on channel name in Shorts
+            const channelLink = await page.$('ytd-channel-name a, .ytd-reel-player-overlay-renderer a').catch(() => null);
+            if (channelLink) {
+                await channelLink.click();
                 await sleep(humanDelay(3000, 8000));
                 visited = true;
                 await page.goBack();

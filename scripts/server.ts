@@ -62,6 +62,10 @@ const upload = multer({
 app.use(cors());
 app.use(express.json());
 
+// Serve processed videos for Instagram publishing (Instagram downloads from this URL)
+app.use('/api/ig-videos', express.static(path.join(__dirname, 'processed')));
+app.use('/api/ig-videos', express.static(path.join(__dirname, 'uploads')));
+
 /**
  * Load active accounts from Supabase with valid access tokens.
  * Optionally filter by platform(s). If no platforms specified, loads all.
@@ -414,6 +418,130 @@ app.get('/api/warmup/sessions/:accountId', async (req, res) => {
 });
 
 /**
+ * GET /api/warmup/verification-status
+ * Get accounts that need verification attention
+ */
+app.get('/api/warmup/verification-status', async (_req, res) => {
+    const { data, error } = await supabase
+        .from('accounts')
+        .select('id, username, platform, verification_status, email_address, updated_at')
+        .neq('verification_status', 'ok')
+        .eq('is_active', true);
+
+    if (error) {
+        return res.status(500).json({ error: error.message });
+    }
+
+    res.json({ accounts: data || [] });
+});
+
+/**
+ * POST /api/warmup/manual-verify/:accountId
+ * Manually mark an account as verified (after manual intervention)
+ */
+app.post('/api/warmup/manual-verify/:accountId', async (req, res) => {
+    const accountId = req.params.accountId;
+
+    const { error } = await supabase
+        .from('accounts')
+        .update({ verification_status: 'ok' })
+        .eq('id', accountId);
+
+    if (error) {
+        return res.status(500).json({ error: error.message });
+    }
+
+    res.json({ success: true, message: `Account ${accountId} marked as verified` });
+});
+
+/**
+ * GET /api/email/recent/:accountId
+ * Get recent email verifications for an account
+ */
+app.get('/api/email/recent/:accountId', async (req, res) => {
+    const accountId = req.params.accountId;
+
+    // Get account's email
+    const { data: account } = await supabase
+        .from('accounts')
+        .select('email_address')
+        .eq('id', accountId)
+        .single();
+
+    if (!account?.email_address) {
+        return res.json({ emails: [], message: 'No email configured for this account' });
+    }
+
+    const { data, error } = await supabase
+        .from('email_verifications')
+        .select('*')
+        .eq('email_address', account.email_address)
+        .order('received_at', { ascending: false })
+        .limit(10);
+
+    if (error) {
+        return res.status(500).json({ error: error.message });
+    }
+
+    res.json({ emails: data || [] });
+});
+
+/**
+ * GET /api/creation/jobs
+ * Get account creation jobs with optional status filter
+ */
+app.get('/api/creation/jobs', async (req, res) => {
+    const status = req.query.status as string | undefined;
+    const platform = req.query.platform as string | undefined;
+
+    let query = supabase
+        .from('account_creation_jobs')
+        .select('*')
+        .order('created_at', { ascending: false })
+        .limit(50);
+
+    if (status) query = query.eq('status', status);
+    if (platform) query = query.eq('platform', platform);
+
+    const { data, error } = await query;
+
+    if (error) {
+        return res.status(500).json({ error: error.message });
+    }
+
+    res.json({ jobs: data || [] });
+});
+
+/**
+ * GET /api/creation/stats
+ * Get account creation statistics
+ */
+app.get('/api/creation/stats', async (_req, res) => {
+    const { data: accounts } = await supabase
+        .from('accounts')
+        .select('platform, is_active, verification_status, creation_method')
+        .eq('is_active', true);
+
+    const stats: Record<string, { total: number; ok: number; issues: number; automated: number }> = {
+        tiktok: { total: 0, ok: 0, issues: 0, automated: 0 },
+        instagram: { total: 0, ok: 0, issues: 0, automated: 0 },
+        youtube: { total: 0, ok: 0, issues: 0, automated: 0 },
+    };
+
+    for (const acc of accounts || []) {
+        const platform = acc.platform as string;
+        if (stats[platform]) {
+            stats[platform].total++;
+            if (acc.verification_status === 'ok' || !acc.verification_status) stats[platform].ok++;
+            else stats[platform].issues++;
+            if (acc.creation_method === 'automated') stats[platform].automated++;
+        }
+    }
+
+    res.json({ stats });
+});
+
+/**
  * GET /health
  */
 app.get('/health', (_req, res) => {
@@ -592,9 +720,14 @@ Endpoints:
   GET  /api/accounts            - List all active accounts
   GET  /api/accounts/:platform  - List accounts by platform (tiktok/youtube/instagram)
   POST /api/warmup/start/:id    - Trigger warmup session
-  GET  /api/warmup/status       - Today's warmup stats
-  GET  /api/warmup/sessions/:id - Session history
-  GET  /health                  - Health check
+  GET  /api/warmup/status               - Today's warmup stats
+  GET  /api/warmup/sessions/:id         - Session history
+  GET  /api/warmup/verification-status  - Accounts needing verification
+  POST /api/warmup/manual-verify/:id    - Mark account as verified
+  GET  /api/email/recent/:accountId     - Recent email verifications
+  GET  /api/creation/jobs               - Account creation job history
+  GET  /api/creation/stats              - Account creation statistics
+  GET  /health                          - Health check
 
 Supported platforms: TikTok, YouTube, Instagram
 

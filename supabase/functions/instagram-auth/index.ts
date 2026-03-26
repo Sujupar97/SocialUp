@@ -81,12 +81,13 @@ serve(async (req) => {
             throw new Error(profileData.error.message || 'Failed to fetch Instagram profile')
         }
 
-        const instagramUserId = profileData.user_id?.toString() || igUserId
+        // Use app-scoped `id` for Content Publishing API (NOT `user_id`)
+        const instagramUserId = profileData.id?.toString() || profileData.user_id?.toString() || igUserId
         const username = profileData.username || 'instagram_user'
         const displayName = profileData.name || username
         const profilePic = profileData.profile_picture_url || null
 
-        console.log(`Instagram account: @${username} (${instagramUserId})`)
+        console.log(`Instagram account: @${username} (app-scoped id: ${instagramUserId}, user_id: ${profileData.user_id})`)
 
         // 4. Save to Supabase
         const supabaseClient = createClient(

@@ -4,7 +4,8 @@
  * for all active accounts throughout the day.
  *
  * Uses p-queue for concurrency control (max 3 browser instances).
- * Sessions are staggered with randomized delays to appear organic.
+ * Sessions are distributed across 4 time windows per day to appear organic.
+ * Accounts with verification issues are automatically skipped.
  *
  * Usage: npx tsx warmup-scheduler.ts
  */
@@ -12,22 +13,33 @@
 import PQueue from 'p-queue';
 import { createClient } from '@supabase/supabase-js';
 import { WarmupAgent, WarmupConfig } from './warmup-agent';
-import { SUPABASE_CONFIG, SERVER_CONFIG, loadConfig } from './config';
+import { SUPABASE_CONFIG, loadConfig } from './config';
 import 'dotenv/config';
 
 const supabase = createClient(SUPABASE_CONFIG.url, SUPABASE_CONFIG.anonKey);
 
 // Configurable via app_settings
-let SESSIONS_PER_DAY = 3;
+let SESSIONS_PER_DAY = 4;
 let MIN_DURATION_SEC = 300;
 let MAX_DURATION_SEC = 900;
 let MAX_CONCURRENT = 3;
 let WARMUP_ENABLED = true;
+let MAX_LIKES = 15;
+let MAX_FOLLOWS = 5;
+let MAX_COMMENTS = 3;
 
 // Check interval: every 15 minutes
 const CHECK_INTERVAL_MS = 15 * 60 * 1000;
 
-// Queue for limiting concurrent browser instances
+// Time windows for session distribution (Colombia timezone UTC-5)
+// Each window is a 2-hour range during which a session should run
+const SESSION_WINDOWS = [
+    { start: 8, end: 10 },   // Morning
+    { start: 12, end: 14 },  // Midday
+    { start: 17, end: 19 },  // Afternoon
+    { start: 21, end: 23 },  // Evening
+];
+
 let queue: PQueue;
 
 interface AccountForWarmup {
@@ -49,6 +61,9 @@ async function loadWarmupConfig(): Promise<void> {
             'warmup_max_duration_sec',
             'warmup_max_concurrent',
             'warmup_enabled',
+            'warmup_max_likes',
+            'warmup_max_follows',
+            'warmup_max_comments',
         ]);
 
     const settings: Record<string, string> = {};
@@ -56,27 +71,55 @@ async function loadWarmupConfig(): Promise<void> {
         settings[row.key] = row.value;
     }
 
-    SESSIONS_PER_DAY = parseInt(settings['warmup_sessions_per_day'] || '3', 10);
+    SESSIONS_PER_DAY = parseInt(settings['warmup_sessions_per_day'] || '4', 10);
     MIN_DURATION_SEC = parseInt(settings['warmup_min_duration_sec'] || '300', 10);
     MAX_DURATION_SEC = parseInt(settings['warmup_max_duration_sec'] || '900', 10);
     MAX_CONCURRENT = parseInt(settings['warmup_max_concurrent'] || '3', 10);
     WARMUP_ENABLED = settings['warmup_enabled'] !== 'false';
+    MAX_LIKES = parseInt(settings['warmup_max_likes'] || '15', 10);
+    MAX_FOLLOWS = parseInt(settings['warmup_max_follows'] || '5', 10);
+    MAX_COMMENTS = parseInt(settings['warmup_max_comments'] || '3', 10);
+}
+
+/**
+ * Get current time window index (0-3) based on Colombia time.
+ * Returns -1 if outside all windows.
+ */
+function getCurrentWindowIndex(): number {
+    const now = new Date();
+    // Colombia is UTC-5
+    const colombiaHour = (now.getUTCHours() - 5 + 24) % 24;
+
+    for (let i = 0; i < SESSION_WINDOWS.length; i++) {
+        if (colombiaHour >= SESSION_WINDOWS[i].start && colombiaHour < SESSION_WINDOWS[i].end) {
+            return i;
+        }
+    }
+    return -1;
 }
 
 async function getActiveAccounts(): Promise<AccountForWarmup[]> {
-    const { data, error } = await supabase
+    const query = supabase
         .from('accounts')
         .select('id, platform, username, proxy_url, proxy_username, proxy_password')
         .eq('is_active', true)
         .not('access_token', 'is', null)
         .order('created_at', { ascending: true });
 
+    // Filter out accounts with verification issues
+    // Only run warmup on accounts with 'ok' status or no status set
+    const { data, error } = await query;
+
     if (error) {
         console.error('[Scheduler] Error loading accounts:', error.message);
         return [];
     }
 
-    return data || [];
+    // Filter in code since verification_status might not exist yet in all accounts
+    return (data || []).filter(a => {
+        const status = (a as any).verification_status;
+        return !status || status === 'ok';
+    });
 }
 
 async function getSessionsToday(accountId: string): Promise<number> {
@@ -94,6 +137,52 @@ async function getSessionsToday(accountId: string): Promise<number> {
     return count || 0;
 }
 
+/**
+ * Get sessions completed in the current time window for an account.
+ * Each window should have at most 1 session.
+ */
+async function getSessionsInCurrentWindow(accountId: string, windowIndex: number): Promise<number> {
+    if (windowIndex < 0) return 999; // Outside windows, don't schedule
+
+    const window = SESSION_WINDOWS[windowIndex];
+    const now = new Date();
+
+    // Calculate window start time in UTC
+    const windowStartUTC = new Date(now);
+    windowStartUTC.setUTCHours(window.start + 5, 0, 0, 0); // +5 to convert Colombia to UTC
+
+    const { count, error } = await supabase
+        .from('warmup_sessions')
+        .select('id', { count: 'exact', head: true })
+        .eq('account_id', accountId)
+        .in('status', ['completed', 'running'])
+        .gte('created_at', windowStartUTC.toISOString());
+
+    if (error) return 999;
+    return count || 0;
+}
+
+function getActionLimits(platform: string): Record<string, number> {
+    const limits: Record<string, number> = {
+        like: MAX_LIKES,
+        follow: MAX_FOLLOWS,
+        comment: MAX_COMMENTS,
+    };
+
+    // YouTube: no comments, no saves
+    if (platform === 'youtube') {
+        limits.comment = 0;
+        limits.save = 0;
+    }
+
+    // Instagram: slightly lower comment limit
+    if (platform === 'instagram') {
+        limits.comment = Math.min(MAX_COMMENTS, 2);
+    }
+
+    return limits;
+}
+
 async function runWarmupForAccount(account: AccountForWarmup): Promise<void> {
     const config: WarmupConfig = {
         accountId: account.id,
@@ -105,15 +194,20 @@ async function runWarmupForAccount(account: AccountForWarmup): Promise<void> {
         minDurationSec: MIN_DURATION_SEC,
         maxDurationSec: MAX_DURATION_SEC,
         headless: true,
+        actionLimits: getActionLimits(account.platform),
     };
 
     const agent = new WarmupAgent(config);
     const result = await agent.runSession();
 
     if (result.success) {
-        console.log(`[Scheduler] @${account.username}: ${result.actionsPerformed} actions in ${result.durationSec}s`);
+        console.log(`[Scheduler] @${account.username} (${account.platform}): ${result.actionsPerformed} actions in ${result.durationSec}s`);
+    } else if (result.notLoggedIn) {
+        console.warn(`[Scheduler] @${account.username} (${account.platform}): NOT LOGGED IN — skipping future sessions until resolved`);
+    } else if (result.verificationNeeded) {
+        console.warn(`[Scheduler] @${account.username} (${account.platform}): Verification needed (${result.verificationNeeded}) — pausing`);
     } else {
-        console.error(`[Scheduler] @${account.username}: Failed - ${result.error}`);
+        console.error(`[Scheduler] @${account.username} (${account.platform}): Failed - ${result.error}`);
     }
 }
 
@@ -126,13 +220,22 @@ async function scheduleRound(): Promise<void> {
     // Reload config each round
     await loadWarmupConfig();
 
-    const accounts = await getActiveAccounts();
-    if (accounts.length === 0) {
-        console.log('[Scheduler] No active accounts.');
+    // Check if we're in a valid time window
+    const windowIndex = getCurrentWindowIndex();
+    if (windowIndex < 0) {
+        const now = new Date();
+        const colombiaHour = (now.getUTCHours() - 5 + 24) % 24;
+        console.log(`[Scheduler] Outside session windows (Colombia hour: ${colombiaHour}). Next window: ${SESSION_WINDOWS.find(w => w.start > colombiaHour)?.start || SESSION_WINDOWS[0].start}:00`);
         return;
     }
 
-    console.log(`[Scheduler] Checking ${accounts.length} accounts (${SESSIONS_PER_DAY} sessions/day, max ${MAX_CONCURRENT} concurrent)...`);
+    const accounts = await getActiveAccounts();
+    if (accounts.length === 0) {
+        console.log('[Scheduler] No active accounts with ok verification status.');
+        return;
+    }
+
+    console.log(`[Scheduler] Window ${windowIndex + 1}/4 — Checking ${accounts.length} accounts (${SESSIONS_PER_DAY} sessions/day, max ${MAX_CONCURRENT} concurrent)...`);
 
     // Update queue concurrency
     queue.concurrency = MAX_CONCURRENT;
@@ -140,10 +243,16 @@ async function scheduleRound(): Promise<void> {
     let scheduled = 0;
 
     for (const account of accounts) {
+        // Check daily limit
         const sessionsToday = await getSessionsToday(account.id);
-
         if (sessionsToday >= SESSIONS_PER_DAY) {
-            continue; // Already done for today
+            continue;
+        }
+
+        // Check if already ran in this window
+        const sessionsInWindow = await getSessionsInCurrentWindow(account.id, windowIndex);
+        if (sessionsInWindow > 0) {
+            continue;
         }
 
         // Add random delay before starting (0-5 min stagger)
@@ -158,9 +267,9 @@ async function scheduleRound(): Promise<void> {
     }
 
     if (scheduled > 0) {
-        console.log(`[Scheduler] Queued ${scheduled} warmup sessions.`);
+        console.log(`[Scheduler] Queued ${scheduled} warmup sessions for window ${windowIndex + 1}.`);
     } else {
-        console.log('[Scheduler] All accounts have completed their sessions for today.');
+        console.log(`[Scheduler] All accounts done for window ${windowIndex + 1}.`);
     }
 }
 
@@ -174,6 +283,8 @@ async function main(): Promise<void> {
     queue = new PQueue({ concurrency: MAX_CONCURRENT });
 
     console.log(`[Scheduler] Config: ${SESSIONS_PER_DAY} sessions/day, ${MIN_DURATION_SEC}-${MAX_DURATION_SEC}s, max ${MAX_CONCURRENT} concurrent`);
+    console.log(`[Scheduler] Action limits: ${MAX_LIKES} likes, ${MAX_FOLLOWS} follows, ${MAX_COMMENTS} comments`);
+    console.log(`[Scheduler] Time windows (Colombia): ${SESSION_WINDOWS.map(w => `${w.start}:00-${w.end}:00`).join(', ')}`);
     console.log(`[Scheduler] Checking every ${CHECK_INTERVAL_MS / 60000} minutes.`);
 
     // Run immediately on start
