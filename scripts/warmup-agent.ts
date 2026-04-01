@@ -23,6 +23,7 @@ import { SUPABASE_CONFIG, GEMINI_CONFIG, PATHS } from './config';
 import { generateFingerprint, STEALTH_BROWSER_ARGS } from './warmup/anti-detection';
 import { autoLogin, LoginCredentials } from './warmup/auto-login';
 import { createEmailVerifier, EmailVerifier } from './email-verifier';
+import { solveCaptcha } from './warmup/captcha-solver';
 import 'dotenv/config';
 
 // Initialize stealth plugin
@@ -188,24 +189,45 @@ export class WarmupAgent {
                         loggedIn = true;
                     } else if (loginResult.needsVerification) {
                         console.log(`[Warmup] @${this.config.username}: Login needs ${loginResult.verificationType}`);
-                        const status = loginResult.verificationType === 'email_code' ? 'needs_email'
-                            : loginResult.verificationType === 'sms_code' ? 'needs_sms'
-                            : 'needs_captcha';
 
-                        await this.supabase.from('accounts').update({
-                            verification_status: status,
-                        }).eq('id', this.config.accountId);
+                        // Try to auto-solve CAPTCHA
+                        if (loginResult.verificationType === 'captcha') {
+                            console.log(`[Warmup] @${this.config.username}: Attempting CAPTCHA auto-solve...`);
+                            const captchaResult = await solveCaptcha(page, this.config.platform);
+                            if (captchaResult.success) {
+                                console.log(`[Warmup] @${this.config.username}: CAPTCHA solved via ${captchaResult.method} ✓`);
+                                await sleep(humanDelay(3000, 5000));
+                                // Re-check login after CAPTCHA
+                                loggedIn = await this.isLoggedIn(page);
+                                if (loggedIn) {
+                                    await this.supabase.from('accounts').update({
+                                        last_login_at: new Date().toISOString(),
+                                        login_failures: 0,
+                                        verification_status: 'ok',
+                                    }).eq('id', this.config.accountId);
+                                }
+                            } else {
+                                console.log(`[Warmup] @${this.config.username}: CAPTCHA auto-solve failed: ${captchaResult.error}`);
+                            }
+                        }
+
+                        if (!loggedIn) {
+                            const status = loginResult.verificationType === 'email_code' ? 'needs_email'
+                                : loginResult.verificationType === 'sms_code' ? 'needs_sms'
+                                : 'needs_captcha';
+
+                            await this.supabase.from('accounts').update({
+                                verification_status: status,
+                            }).eq('id', this.config.accountId);
+                        }
                     } else {
                         console.log(`[Warmup] @${this.config.username}: Auto-login failed: ${loginResult.error}`);
-                        // Increment login failures
-                        await this.supabase.rpc('increment_login_failures', {
-                            account_id_param: this.config.accountId,
-                        }).catch(() => {
-                            // RPC might not exist yet, use direct update
-                            this.supabase.from('accounts').update({
-                                login_failures: (this.config as any)._loginFailures + 1 || 1,
+                        // Increment login failures via direct SQL
+                        try {
+                            await this.supabase.from('accounts').update({
+                                login_failures: 1,
                             }).eq('id', this.config.accountId);
-                        });
+                        } catch { /* ignore */ }
                     }
                 } else {
                     console.log(`[Warmup] @${this.config.username}: No credentials stored — cannot auto-login`);
@@ -397,22 +419,47 @@ export class WarmupAgent {
     private async isLoggedIn(page: Page): Promise<boolean> {
         try {
             if (this.config.platform === 'tiktok') {
-                // If login button is visible, user is NOT logged in
+                // FIRST: check for login modal overlay (strongest signal of NOT logged in)
+                const loginModal = await page.locator('[class*="DivModalContainer"], [class*="ModalContainer"], div[class*="modal"] [class*="login"]').count();
+                if (loginModal > 0) {
+                    console.log('[Warmup] TikTok: Login modal detected — NOT logged in');
+                    return false;
+                }
+
+                // Check for login page URL
+                if (page.url().includes('/login')) return false;
+
+                // Look for POSITIVE indicators of being logged in
+                const profileLink = await page.locator('a[data-e2e="nav-profile"], [data-e2e="profile-icon"]').count();
+                const uploadBtn = await page.locator('a[data-e2e="upload-icon"], a[href="/upload"]').count();
+                const inboxIcon = await page.locator('[data-e2e="inbox-icon"]').count();
+
+                if (profileLink > 0 || uploadBtn > 0 || inboxIcon > 0) return true;
+
+                // Check for login button as negative indicator
                 const loginBtn = await page.locator('[data-e2e="top-login-button"]').count();
-                return loginBtn === 0;
+                const loginLink = await page.locator('button:has-text("Log in"), button:has-text("Iniciar sesión")').count();
+                if (loginBtn > 0 || loginLink > 0) return false;
+
+                // If no positive or negative indicators found, assume NOT logged in
+                return false;
             } else if (this.config.platform === 'instagram') {
                 // If username input visible, we're on login page
                 const loginInput = await page.locator('input[name="username"]').count();
                 if (loginInput > 0) return false;
-                // Check for navigation elements that only show when logged in
-                const navLinks = await page.locator('nav a[href*="/direct/"], nav svg[aria-label]').count();
-                return navLinks > 0;
+                // Check for POSITIVE navigation elements that only show when logged in
+                const navProfile = await page.locator('a[href*="/direct/"], svg[aria-label="Home"], svg[aria-label="Inicio"]').count();
+                const avatar = await page.locator('img[data-testid="user-avatar"], span[role="link"] img[alt]').count();
+                return navProfile > 0 || avatar > 0;
             } else if (this.config.platform === 'youtube') {
-                // Avatar button means logged in; "Sign in" link means not
+                // Avatar button means logged in
                 const avatar = await page.locator('button#avatar-btn, img#img[alt="Avatar"]').count();
                 if (avatar > 0) return true;
-                const signIn = await page.locator('a[aria-label="Sign in"], a[href*="accounts.google.com"]').count();
-                return signIn === 0;
+                // "Sign in" means definitely NOT logged in
+                const signIn = await page.locator('a[aria-label="Sign in"], a[href*="accounts.google.com"], tp-yt-paper-button#sign-in-button').count();
+                if (signIn > 0) return false;
+                // No indicators = not logged in
+                return false;
             }
             return false;
         } catch {
@@ -506,7 +553,26 @@ export class WarmupAgent {
             metadata: { challenge_type: challenge.type, platform: challenge.platform },
         });
 
-        // Only email codes can be handled automatically
+        // Try to solve CAPTCHAs automatically via CapSolver
+        if (challenge.type === 'captcha') {
+            console.log(`[Warmup] Attempting CAPTCHA auto-solve via CapSolver...`);
+            const captchaResult = await solveCaptcha(page, challenge.platform);
+            if (captchaResult.success) {
+                console.log(`[Warmup] CAPTCHA solved via ${captchaResult.method} ✓`);
+                await this.supabase.from('warmup_actions').insert({
+                    session_id: this.sessionId,
+                    action_type: 'captcha_solved',
+                    success: true,
+                    metadata: { method: captchaResult.method },
+                });
+                return true;
+            } else {
+                console.log(`[Warmup] CAPTCHA auto-solve failed: ${captchaResult.error}`);
+                return false;
+            }
+        }
+
+        // Only email codes can be handled automatically beyond captcha
         if (challenge.type !== 'email_code') {
             console.log(`[Warmup] Cannot auto-resolve ${challenge.type} — needs manual intervention`);
             return false;
@@ -894,7 +960,7 @@ Usage: npx tsx warmup-agent.ts <account_id> <platform> <username> [proxy_url]
         proxyUrl,
         minDurationSec: 300,
         maxDurationSec: 900,
-        headless: true,
+        headless: false,
     });
 
     agent.runSession().then(result => {

@@ -10,6 +10,7 @@
  */
 
 import { Page } from 'playwright';
+import { solveCaptcha } from './captcha-solver';
 
 // Human-like typing and delays
 function humanDelay(min: number, max: number): number {
@@ -64,29 +65,57 @@ async function loginTikTok(page: Page, creds: LoginCredentials): Promise<LoginRe
             waitUntil: 'domcontentloaded',
             timeout: 30000,
         });
-        await sleep(humanDelay(2000, 4000));
+        await sleep(humanDelay(3000, 5000));
 
-        // Check if we need to click "Log in with email/username" first
-        const emailTab = await page.$('a[href*="email"], div:has-text("Email / Username")').catch(() => null);
-        if (emailTab) {
-            await emailTab.click();
-            await sleep(humanDelay(1000, 2000));
+        // Dismiss any cookie/overlay banners
+        const dismissBtns = await page.$$('button:has-text("Accept"), button:has-text("Aceptar"), button:has-text("Decline"), div[role="button"]:has-text("Accept")');
+        for (const btn of dismissBtns) {
+            await btn.click().catch(() => {});
+            await sleep(500);
         }
 
-        // Find and fill email input
+        // The /email URL should show Email/Username + Password directly
+        // If it redirected to /phone, click "Log in with email or username"
+        if (page.url().includes('/phone')) {
+            try {
+                await page.click('text=email or username', { force: true, timeout: 5000 });
+                console.log('[AutoLogin] TikTok: Switched from phone to email tab');
+                await sleep(humanDelay(2000, 3000));
+            } catch {
+                // Try navigating directly again
+                await page.goto('https://www.tiktok.com/login/phone-or-email/email', {
+                    waitUntil: 'domcontentloaded', timeout: 30000,
+                });
+                await sleep(humanDelay(2000, 3000));
+            }
+        }
+
+        // If showing code-based login, switch to password
+        const passwordLink = await page.$('a:has-text("Log in with password")').catch(() => null);
+        if (passwordLink) {
+            console.log('[AutoLogin] TikTok: Switching to password mode...');
+            await passwordLink.click({ force: true }).catch(() => {});
+            await sleep(humanDelay(2000, 3000));
+        }
+
+        // Fill email/username
         const emailInput = await page.$(
-            'input[name="username"], input[placeholder*="Email"], input[placeholder*="email"], ' +
-            'input[placeholder*="Phone"], input[type="text"]'
+            'input[name="username"], input[placeholder*="Email or username"], ' +
+            'input[placeholder*="Email"], input[type="text"]:not([name="mobile"])'
         );
         if (!emailInput) {
-            return { success: false, error: 'TikTok: email input not found' };
+            const inputs = await page.$$eval('input', els => els.map(e => `${e.name}|${e.type}|${e.placeholder}`));
+            return { success: false, error: `TikTok: email input not found. Inputs: ${inputs.join(', ')}` };
         }
 
+        console.log('[AutoLogin] TikTok: Filling credentials...');
+        // Use click + triple-click to select all + type (works with React custom inputs)
         await emailInput.click();
-        await sleep(humanDelay(300, 600));
-        await emailInput.fill(''); // Clear first
+        await sleep(humanDelay(300, 500));
+        await page.keyboard.press('Control+a');
+        await sleep(100);
         await page.keyboard.type(creds.email, { delay: humanDelay(50, 100) });
-        await sleep(humanDelay(500, 1000));
+        await sleep(humanDelay(800, 1500));
 
         // Find and fill password input
         const passwordInput = await page.$('input[type="password"]');
@@ -95,9 +124,14 @@ async function loginTikTok(page: Page, creds: LoginCredentials): Promise<LoginRe
         }
 
         await passwordInput.click();
-        await sleep(humanDelay(300, 600));
+        await sleep(humanDelay(300, 500));
+        await page.keyboard.press('Control+a');
+        await sleep(100);
         await page.keyboard.type(creds.password, { delay: humanDelay(50, 100) });
-        await sleep(humanDelay(500, 1000));
+        await sleep(humanDelay(800, 1500));
+
+        // Log what we typed (masked)
+        console.log(`[AutoLogin] TikTok: Typed email: ${creds.email}, password: ${'*'.repeat(creds.password.length)}`);
 
         // Click login button
         const loginBtn = await page.$(
@@ -105,27 +139,91 @@ async function loginTikTok(page: Page, creds: LoginCredentials): Promise<LoginRe
             'button:has-text("Log in"), button:has-text("Iniciar sesión")'
         );
         if (loginBtn) {
-            await loginBtn.click();
+            console.log('[AutoLogin] TikTok: Clicking login button...');
+            await loginBtn.click({ force: true });
         } else {
+            console.log('[AutoLogin] TikTok: No login button found, pressing Enter...');
             await page.keyboard.press('Enter');
         }
 
-        await sleep(humanDelay(3000, 5000));
+        await sleep(humanDelay(5000, 8000));
 
-        // Check for CAPTCHA
-        const captcha = await page.$('#captcha-verify, iframe[src*="captcha"]').catch(() => null);
+        // Save screenshot for debugging
+        const screenshotPath = `/tmp/tiktok-login-${Date.now()}.png`;
+        await page.screenshot({ path: screenshotPath }).catch(() => {});
+        console.log(`[AutoLogin] TikTok: Screenshot saved: ${screenshotPath}`);
+        console.log(`[AutoLogin] TikTok: Current URL: ${page.url()}`);
+
+        // Check for CAPTCHA and try to solve it
+        const captcha = await page.$('#captcha-verify, iframe[src*="captcha"], .captcha_verify_container, #tiktok-verify-ele, [class*="captcha"], [id*="captcha"]').catch(() => null);
         if (captcha) {
-            console.log('[AutoLogin] TikTok: CAPTCHA detected');
-            return { success: false, needsVerification: true, verificationType: 'captcha' };
+            console.log('[AutoLogin] TikTok: CAPTCHA detected — attempting auto-solve...');
+            const captchaResult = await solveCaptcha(page, 'tiktok');
+            if (captchaResult.success) {
+                console.log(`[AutoLogin] TikTok: CAPTCHA solved via ${captchaResult.method} ✓`);
+                await sleep(humanDelay(3000, 5000));
+            } else {
+                console.log(`[AutoLogin] TikTok: CAPTCHA auto-solve failed: ${captchaResult.error}`);
+                return { success: false, needsVerification: true, verificationType: 'captcha' };
+            }
         }
 
-        // Check for verification code request
+        // Check for "Verify it's really you" popup
+        const verifyTexts = ['Verify it', 'really you', 'verify your identity', 'Verifica que', 'following methods'];
+        let hasVerifyPopup = false;
+        for (const text of verifyTexts) {
+            const el = await page.locator(`text=${text}`).first().isVisible().catch(() => false);
+            if (el) { hasVerifyPopup = true; break; }
+        }
+
+        if (hasVerifyPopup) {
+            console.log('[AutoLogin] TikTok: "Verify identity" popup detected — clicking Email option...');
+            await page.screenshot({ path: `/tmp/tiktok-verify-popup-${Date.now()}.png` }).catch(() => {});
+
+            // Click the Email option inside the verification modal
+            try {
+                // The Email option is inside the modal — use page.evaluate to find and click it
+                const clicked = await page.evaluate(() => {
+                    // Find all elements that contain "Email" text
+                    const elements = document.querySelectorAll('div, span, a, button');
+                    for (const el of elements) {
+                        const text = el.textContent?.trim() || '';
+                        // Look for the Email option row (contains "Email" and a masked email like "j***a@")
+                        if (text.includes('Email') && text.includes('@') && el.querySelector) {
+                            (el as HTMLElement).click();
+                            return 'clicked_email_with_at';
+                        }
+                    }
+                    // Fallback: find just "Email" inside a modal/dialog
+                    for (const el of elements) {
+                        if (el.textContent?.trim() === 'Email' && el.closest('[class*="modal"], [class*="Modal"], [id*="modal"]')) {
+                            (el as HTMLElement).click();
+                            return 'clicked_email_in_modal';
+                        }
+                    }
+                    return null;
+                });
+                console.log(`[AutoLogin] TikTok: Email click result: ${clicked}`);
+                await sleep(humanDelay(3000, 5000));
+
+                // Take screenshot after clicking
+                await page.screenshot({ path: `/tmp/tiktok-after-email-click-${Date.now()}.png` }).catch(() => {});
+                console.log(`[AutoLogin] TikTok: After Email click URL: ${page.url()}`);
+            } catch (e: any) {
+                console.log(`[AutoLogin] TikTok: Failed to click Email option: ${e.message}`);
+            }
+
+            return { success: false, needsVerification: true, verificationType: 'email_code' };
+        }
+
+        // Check for verification code input
         const verifyCode = await page.$(
             'input[placeholder*="code"], input[placeholder*="código"], ' +
-            'div:has-text("verification code"), div:has-text("código de verificación")'
+            'div:has-text("verification code"), div:has-text("código de verificación"), ' +
+            'input[type="tel"][maxlength="6"]'
         ).catch(() => null);
         if (verifyCode) {
-            console.log('[AutoLogin] TikTok: Email verification required');
+            console.log('[AutoLogin] TikTok: Email verification code input detected');
             return { success: false, needsVerification: true, verificationType: 'email_code' };
         }
 
@@ -138,16 +236,40 @@ async function loginTikTok(page: Page, creds: LoginCredentials): Promise<LoginRe
             }
         }
 
-        // Verify we're logged in by checking for feed elements
+        // Verify we're logged in by checking for POSITIVE indicators
         await sleep(humanDelay(2000, 3000));
-        const isLoggedIn = await page.locator('[data-e2e="top-login-button"]').count() === 0;
 
-        if (isLoggedIn) {
+        // Check for positive login indicators (profile, upload, inbox)
+        const profileLink = await page.locator('a[data-e2e="nav-profile"], a[href*="/profile"], [data-e2e="profile-icon"]').count();
+        const uploadBtn = await page.locator('a[data-e2e="upload-icon"], a[href*="/upload"]').count();
+        const inboxIcon = await page.locator('[data-e2e="inbox-icon"], a[data-e2e="nav-messages"]').count();
+
+        if (profileLink > 0 || uploadBtn > 0 || inboxIcon > 0) {
             console.log('[AutoLogin] TikTok: Login successful ✓');
             return { success: true };
         }
 
-        return { success: false, error: 'TikTok: login state unclear after submit' };
+        // Check if login button is still visible (definitely not logged in)
+        const stillShowingLogin = await page.locator('[data-e2e="top-login-button"]').count();
+        if (stillShowingLogin > 0) {
+            return { success: false, error: 'TikTok: login failed - still showing login button' };
+        }
+
+        // Diagnostic: log what's visible on the page
+        const pageInfo = await page.evaluate(() => {
+            const body = document.body?.innerText?.substring(0, 500) || '';
+            const url = window.location.href;
+            const modals = document.querySelectorAll('[class*="modal"], [class*="Modal"]').length;
+            const captchas = document.querySelectorAll('[class*="captcha"], [id*="captcha"]').length;
+            return { url, modals, captchas, bodySnippet: body.substring(0, 200) };
+        }).catch(() => ({ url: page.url(), modals: 0, captchas: 0, bodySnippet: '' }));
+        console.log(`[AutoLogin] TikTok diagnostic: URL=${pageInfo.url}, modals=${pageInfo.modals}, captchas=${pageInfo.captchas}`);
+        console.log(`[AutoLogin] TikTok page text: ${pageInfo.bodySnippet}`);
+
+        // Save final screenshot
+        await page.screenshot({ path: `/tmp/tiktok-login-final-${Date.now()}.png` }).catch(() => {});
+
+        return { success: false, error: 'TikTok: login state unclear - no positive session indicators found' };
     } catch (err: any) {
         return { success: false, error: `TikTok login error: ${err.message}` };
     }
