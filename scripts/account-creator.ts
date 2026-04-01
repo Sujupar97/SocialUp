@@ -23,6 +23,8 @@ import { createClient } from '@supabase/supabase-js';
 import { SUPABASE_CONFIG, PATHS, loadConfig } from './config';
 import { generateFingerprint, STEALTH_BROWSER_ARGS } from './warmup/anti-detection';
 import { createEmailVerifier } from './email-verifier';
+import { solveCaptcha } from './warmup/captcha-solver';
+import { createSmsVerifier } from './sms-verifier';
 import 'dotenv/config';
 
 chromium.use(StealthPlugin());
@@ -175,12 +177,72 @@ async function createTikTokAccount(
         }
         await sleep(humanDelay(5000, 8000));
 
-        // Check for CAPTCHA
-        const captcha = await page.$('#captcha-verify, iframe[src*="captcha"]').catch(() => null);
+        // Check for CAPTCHA and auto-solve
+        const captcha = await page.$('#captcha-verify, iframe[src*="captcha"], .captcha_verify_container, [id*="captcha"], [class*="captcha"]').catch(() => null);
         if (captcha) {
-            console.log('[Creator] TikTok: CAPTCHA appeared — waiting 60s for manual solve...');
-            // Wait up to 60 seconds for manual CAPTCHA solve (if running with headless=false)
-            await sleep(60000);
+            console.log('[Creator] TikTok: CAPTCHA detected — attempting auto-solve via CapSolver...');
+            const captchaResult = await solveCaptcha(page, 'tiktok');
+            if (captchaResult.success) {
+                console.log(`[Creator] TikTok: CAPTCHA solved via ${captchaResult.method} ✓`);
+                await sleep(humanDelay(3000, 5000));
+            } else {
+                console.log(`[Creator] TikTok: CAPTCHA auto-solve failed: ${captchaResult.error}`);
+                return { success: false, email, error: `CAPTCHA failed: ${captchaResult.error}` };
+            }
+        }
+
+        // Check for phone verification requirement
+        const phoneInput = await page.$('input[placeholder*="phone"], input[type="tel"], input[name="phone"]').catch(() => null);
+        const phonePrompt = await page.locator('text=phone number').first().isVisible().catch(() => false);
+        if (phoneInput || phonePrompt) {
+            console.log('[Creator] TikTok: Phone verification required — renting SMS number...');
+            const smsVerifier = createSmsVerifier();
+            const rental = await smsVerifier.rentNumber('tiktok');
+            if (!rental) {
+                return { success: false, email, error: 'Failed to rent SMS number (no numbers available or no balance)' };
+            }
+
+            // Enter phone number
+            const phoneField = phoneInput || await page.$('input[type="tel"]').catch(() => null);
+            if (phoneField) {
+                await phoneField.click();
+                await sleep(humanDelay(300, 500));
+                await page.keyboard.type(rental.phoneNumber, { delay: humanDelay(50, 100) });
+                await sleep(humanDelay(500, 1000));
+
+                // Click send code
+                const sendSmsBtn = await page.$(
+                    'button:has-text("Send"), button:has-text("Enviar"), button:has-text("Send code")'
+                ).catch(() => null);
+                if (sendSmsBtn) {
+                    await sendSmsBtn.click();
+                    await sleep(humanDelay(2000, 3000));
+                }
+
+                // Wait for SMS code
+                const smsCode = await smsVerifier.waitForCode(rental.id, 120000);
+                if (!smsCode) {
+                    await smsVerifier.cancelNumber(rental.id);
+                    return { success: false, email, error: 'SMS code not received within timeout' };
+                }
+
+                // Enter SMS code
+                const smsInput = await page.$('input[placeholder*="code"], input[placeholder*="código"], input[type="tel"][maxlength="6"]').catch(() => null);
+                if (smsInput) {
+                    await smsInput.click();
+                    await sleep(humanDelay(300, 500));
+                    await page.keyboard.type(smsCode, { delay: humanDelay(80, 120) });
+                    await sleep(humanDelay(1000, 2000));
+                }
+
+                // Submit verification
+                const verifyBtn = await page.$('button[type="submit"], button:has-text("Verify"), button:has-text("Verificar")').catch(() => null);
+                if (verifyBtn) await verifyBtn.click();
+                await sleep(humanDelay(3000, 5000));
+
+                await smsVerifier.confirmCodeReceived(rental.id);
+                console.log('[Creator] TikTok: Phone verification completed ✓');
+            }
         }
 
         // Try to set username
@@ -500,7 +562,7 @@ async function createYouTubeAccount(
 // Main creation orchestrator
 // ========================================
 
-async function createAccount(
+export async function createAccount(
     config: AccountCreationConfig,
     index: number
 ): Promise<CreationResult> {
@@ -513,14 +575,77 @@ async function createAccount(
         fs.mkdirSync(sessionDir, { recursive: true });
     }
 
-    const context = await chromium.launchPersistentContext(sessionDir, {
+    // Create pending account record FIRST so we can assign a proxy
+    const { data: pendingAccount, error: insertError } = await supabase
+        .from('accounts')
+        .insert({
+            platform: config.platform,
+            username,
+            email_address: email,
+            login_password: config.password,
+            is_active: false, // Will activate on success
+            creation_method: 'automated',
+            verification_status: 'ok',
+        })
+        .select('id')
+        .single();
+
+    if (insertError || !pendingAccount) {
+        return { success: false, email, error: `DB insert failed: ${insertError?.message}` };
+    }
+
+    // Log creation job
+    const { data: job } = await supabase.from('account_creation_jobs').insert({
+        platform: config.platform,
+        email_address: email,
+        username,
+        status: 'creating',
+        account_id: pendingAccount.id,
+    }).select('id').single();
+
+    // Assign proxy BEFORE launching browser
+    let proxyConfig: { server?: string; username?: string; password?: string } | undefined;
+    const { data: proxyResult } = await supabase.rpc('assign_proxy_for_platform', {
+        p_account_id: pendingAccount.id,
+        p_platform: config.platform,
+    }).catch(() => ({ data: null }));
+
+    if (proxyResult) {
+        console.log(`[Creator] Proxy assigned for ${username}`);
+    } else {
+        console.log(`[Creator] No proxy available for ${username} — proceeding without proxy`);
+    }
+
+    // Get proxy details from the account (RPC updates the account)
+    const { data: accountWithProxy } = await supabase
+        .from('accounts')
+        .select('proxy_url, proxy_username, proxy_password')
+        .eq('id', pendingAccount.id)
+        .single();
+
+    if (accountWithProxy?.proxy_url) {
+        proxyConfig = {
+            server: accountWithProxy.proxy_url,
+            username: accountWithProxy.proxy_username || undefined,
+            password: accountWithProxy.proxy_password || undefined,
+        };
+        console.log(`[Creator] Using proxy: ${proxyConfig.server}`);
+    }
+
+    const launchOptions: any = {
         headless: config.headless,
         args: [...STEALTH_BROWSER_ARGS],
         viewport: fingerprint.viewport,
         userAgent: fingerprint.userAgent,
         locale: fingerprint.locale,
         timezoneId: fingerprint.timezoneId,
-    });
+    };
+
+    if (proxyConfig?.server) {
+        launchOptions.proxy = proxyConfig;
+    }
+
+    const context = await chromium.launchPersistentContext(sessionDir, launchOptions);
 
     try {
         const page = context.pages()[0] || await context.newPage();
@@ -540,56 +665,38 @@ async function createAccount(
                 result = { success: false, email, error: `Unknown platform: ${config.platform}` };
         }
 
-        // Save to database if successful
         if (result.success) {
-            // Create account record
-            const { data: account, error } = await supabase
-                .from('accounts')
-                .insert({
-                    platform: config.platform,
-                    username: result.username || username,
-                    email_address: email,
-                    login_password: config.password,
-                    is_active: true,
-                    creation_method: 'automated',
-                    verification_status: 'ok',
-                })
-                .select('id')
-                .single();
+            // Activate the account
+            await supabase.from('accounts').update({
+                is_active: true,
+                username: result.username || username,
+                last_login_at: new Date().toISOString(),
+            }).eq('id', pendingAccount.id);
 
-            if (error) {
-                console.error(`[Creator] DB error: ${error.message}`);
-                result.error = `Account created but DB save failed: ${error.message}`;
-            } else if (account) {
-                result.accountId = account.id;
+            result.accountId = pendingAccount.id;
 
-                // Try to assign a proxy
-                await supabase.rpc('assign_proxy_for_platform', {
-                    p_account_id: account.id,
-                    p_platform: config.platform,
-                }).catch(() => {
-                    console.log(`[Creator] No proxy available for ${username}`);
-                });
-
-                // Log creation job
-                await supabase.from('account_creation_jobs').insert({
-                    platform: config.platform,
-                    email_address: email,
-                    username: result.username || username,
+            // Update job status
+            if (job) {
+                await supabase.from('account_creation_jobs').update({
                     status: 'completed',
-                    account_id: account.id,
+                    username: result.username || username,
                     completed_at: new Date().toISOString(),
-                });
+                }).eq('id', job.id);
             }
+
+            console.log(`[Creator] ✅ Account saved: ${result.username} (${email})`);
         } else {
-            // Log failed job
-            await supabase.from('account_creation_jobs').insert({
-                platform: config.platform,
-                email_address: email,
-                username,
-                status: 'failed',
-                error_message: result.error,
-            });
+            // Delete the pending account on failure
+            await supabase.from('accounts').delete().eq('id', pendingAccount.id);
+
+            // Update job status
+            if (job) {
+                await supabase.from('account_creation_jobs').update({
+                    status: 'failed',
+                    error_message: result.error,
+                    completed_at: new Date().toISOString(),
+                }).eq('id', job.id);
+            }
         }
 
         return result;
@@ -709,7 +816,13 @@ Password: ${password.slice(0, 4)}****
     process.exit(failed > 0 ? 1 : 0);
 }
 
-main().catch(err => {
-    console.error('[Creator] Fatal error:', err);
-    process.exit(1);
-});
+// Only run CLI when executed directly
+if (require.main === module) {
+    main().catch(err => {
+        console.error('[Creator] Fatal error:', err);
+        process.exit(1);
+    });
+}
+
+// Export for use by server.ts
+export { AccountCreationConfig, CreationResult };

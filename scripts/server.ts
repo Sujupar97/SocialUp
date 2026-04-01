@@ -542,6 +542,83 @@ app.get('/api/creation/stats', async (_req, res) => {
 });
 
 /**
+ * POST /api/creation/create
+ * Start automated account creation
+ * Body: { platform, count?, prefix? }
+ */
+app.post('/api/creation/create', async (req, res) => {
+    try {
+        const { platform, count = 1, prefix = 'socialup' } = req.body;
+
+        if (!['tiktok', 'instagram', 'youtube'].includes(platform)) {
+            return res.status(400).json({ error: 'Invalid platform. Use: tiktok, instagram, youtube' });
+        }
+
+        if (count < 1 || count > 50) {
+            return res.status(400).json({ error: 'Count must be between 1 and 50' });
+        }
+
+        // Get email domain
+        const { data: settings } = await supabase
+            .from('app_settings')
+            .select('value')
+            .eq('key', 'email_domain')
+            .single();
+
+        const emailDomain = settings?.value;
+        if (!emailDomain) {
+            return res.status(400).json({ error: 'email_domain not configured in app_settings' });
+        }
+
+        const password = `SUp${Date.now().toString(36)}!${Math.random().toString(36).slice(2, 8)}`;
+
+        // Start creation in background
+        const jobGroupId = crypto.randomUUID();
+        res.json({
+            message: `Starting creation of ${count} ${platform} account(s)`,
+            jobGroupId,
+            platform,
+            count,
+        });
+
+        // Import and run account creator in background
+        const { createAccount } = await import('./account-creator');
+
+        for (let i = 0; i < count; i++) {
+            console.log(`\n[Creation] Creating ${platform} account ${i + 1}/${count}...`);
+            const result = await createAccount({
+                platform: platform as 'tiktok' | 'instagram' | 'youtube',
+                emailDomain,
+                count,
+                startIndex: i + 1,
+                usernamePrefix: prefix,
+                password,
+                maxConcurrent: 1,
+                headless: true,
+            }, 0);
+
+            if (result.success) {
+                console.log(`[Creation] ✅ ${result.username} (${result.email})`);
+            } else {
+                console.log(`[Creation] ❌ ${result.email}: ${result.error}`);
+            }
+
+            // Delay between accounts (60-120s)
+            if (i < count - 1) {
+                const delay = 60000 + Math.random() * 60000;
+                console.log(`[Creation] Waiting ${Math.round(delay / 1000)}s before next...`);
+                await new Promise(r => setTimeout(r, delay));
+            }
+        }
+    } catch (err: any) {
+        console.error('[Creation] Error:', err.message);
+        if (!res.headersSent) {
+            res.status(500).json({ error: err.message });
+        }
+    }
+});
+
+/**
  * GET /health
  */
 app.get('/health', (_req, res) => {
