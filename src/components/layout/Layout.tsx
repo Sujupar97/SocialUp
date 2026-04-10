@@ -3,6 +3,7 @@ import { motion } from 'framer-motion';
 import {
     LayoutDashboard,
     Users,
+    UserPlus,
     Upload,
     Share2,
     BarChart3,
@@ -13,6 +14,7 @@ import './Layout.css';
 const navItems = [
     { path: '/', icon: LayoutDashboard, label: 'Dashboard' },
     { path: '/accounts', icon: Users, label: 'Accounts' },
+    { path: '/account-creation', icon: UserPlus, label: 'Crear Cuenta' },
     { path: '/upload', icon: Upload, label: 'Create Post' },
     { path: '/distribution', icon: Share2, label: 'Distribution' },
     { path: '/analytics', icon: BarChart3, label: 'Analytics' },

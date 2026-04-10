@@ -99,55 +99,87 @@ async function createTikTokAccount(
         });
         await sleep(humanDelay(2000, 4000));
 
-        // Set birthday (must be 18+)
-        // TikTok signup usually starts with birthday selection
-        const monthSelect = await page.$('select[placeholder*="Month"], select:first-of-type').catch(() => null);
-        if (monthSelect) {
-            await monthSelect.selectOption({ index: Math.floor(Math.random() * 12) + 1 });
+        // Set birthday (must be 18+) — TikTok uses custom combobox dropdowns
+        // Month selector
+        const monthCombobox = page.locator('[role="combobox"]').first();
+        if (await monthCombobox.count() > 0) {
+            await monthCombobox.click();
+            await sleep(humanDelay(500, 800));
+            // Pick a random month (1-12)
+            const monthIndex = Math.floor(Math.random() * 12);
+            const monthOption = page.locator('[role="listbox"]').first().locator('[role="option"]').nth(monthIndex);
+            if (await monthOption.count() > 0) {
+                await monthOption.click();
+            }
             await sleep(humanDelay(300, 600));
 
-            const daySelect = await page.$('select[placeholder*="Day"], select:nth-of-type(2)').catch(() => null);
-            if (daySelect) {
-                await daySelect.selectOption({ index: Math.floor(Math.random() * 28) + 1 });
-                await sleep(humanDelay(300, 600));
+            // Day selector (2nd combobox)
+            const dayCombobox = page.locator('[role="combobox"]').nth(1);
+            await dayCombobox.click();
+            await sleep(humanDelay(500, 800));
+            const dayIndex = Math.floor(Math.random() * 28); // Safe 1-28
+            const dayOption = page.locator('[role="listbox"]').nth(1).locator('[role="option"]').nth(dayIndex);
+            if (await dayOption.count() > 0) {
+                await dayOption.click();
             }
+            await sleep(humanDelay(300, 600));
 
-            const yearSelect = await page.$('select[placeholder*="Year"], select:last-of-type').catch(() => null);
-            if (yearSelect) {
-                // Select a year that makes them 20-30 years old
-                const year = 1994 + Math.floor(Math.random() * 6);
-                await yearSelect.selectOption(String(year));
-                await sleep(humanDelay(500, 1000));
+            // Year selector (3rd combobox) — pick 1994-2000 (age 25-31)
+            const yearCombobox = page.locator('[role="combobox"]').nth(2);
+            await yearCombobox.click();
+            await sleep(humanDelay(500, 800));
+            // Years are listed 2025, 2024, 2023... so index 25 ≈ 2000, index 31 ≈ 1994
+            const yearIndex = 25 + Math.floor(Math.random() * 7);
+            const yearOption = page.locator('[role="listbox"]').nth(2).locator('[role="option"]').nth(yearIndex);
+            if (await yearOption.count() > 0) {
+                await yearOption.click();
             }
+            await sleep(humanDelay(500, 1000));
+            console.log('[Creator] TikTok: Birthday set ✓');
         }
 
         // Fill email
         const emailInput = await page.$(
-            'input[name="email"], input[placeholder*="Email"], input[type="email"]'
+            'input[name="email"], input[placeholder*="Email"], input[placeholder*="correo"], input[type="email"]'
         );
         if (emailInput) {
             await emailInput.click();
+            await sleep(humanDelay(300, 500));
             await page.keyboard.type(email, { delay: humanDelay(50, 100) });
             await sleep(humanDelay(500, 1000));
+            console.log(`[Creator] TikTok: Email filled: ${email}`);
+            // Dismiss autocomplete suggestions by pressing Escape then Tab
+            await page.keyboard.press('Escape');
+            await sleep(humanDelay(300, 500));
+            await page.keyboard.press('Tab');
+            await sleep(humanDelay(300, 500));
+        } else {
+            console.log('[Creator] TikTok: Email input not found!');
         }
 
         // Fill password
         const passwordInput = await page.$('input[type="password"]');
         if (passwordInput) {
-            await passwordInput.click();
+            await passwordInput.click({ force: true });
+            await sleep(humanDelay(300, 500));
             await page.keyboard.type(password, { delay: humanDelay(50, 100) });
             await sleep(humanDelay(500, 1000));
+            console.log('[Creator] TikTok: Password filled');
+        } else {
+            console.log('[Creator] TikTok: Password input not found!');
         }
 
-        // Click "Send code" to verify email
+        // Click "Send code" / "Enviar código"
         const sendCodeBtn = await page.$(
             'button:has-text("Send code"), button:has-text("Enviar código"), ' +
-            'a:has-text("Send code")'
+            'a:has-text("Send code"), a:has-text("Enviar código")'
         ).catch(() => null);
 
         if (sendCodeBtn) {
-            await sendCodeBtn.click();
-            await sleep(humanDelay(2000, 3000));
+            console.log('[Creator] TikTok: Clicking "Send code"...');
+            await sendCodeBtn.click({ force: true });
+            console.log('[Creator] TikTok: "Send code" clicked — waiting for email...');
+            await sleep(humanDelay(3000, 5000));
 
             // Wait for verification code
             const verifier = createEmailVerifier('supabase');
@@ -605,15 +637,20 @@ export async function createAccount(
 
     // Assign proxy BEFORE launching browser
     let proxyConfig: { server?: string; username?: string; password?: string } | undefined;
-    const { data: proxyResult } = await supabase.rpc('assign_proxy_for_platform', {
-        p_account_id: pendingAccount.id,
-        p_platform: config.platform,
-    }).catch(() => ({ data: null }));
+    try {
+        const { data: proxyResult, error: proxyError } = await supabase.rpc('assign_proxy_for_platform', {
+            p_account_id: pendingAccount.id,
+            p_platform: config.platform,
+        });
 
-    if (proxyResult) {
-        console.log(`[Creator] Proxy assigned for ${username}`);
-    } else {
-        console.log(`[Creator] No proxy available for ${username} — proceeding without proxy`);
+        if (proxyResult && !proxyError) {
+            console.log(`[Creator] Proxy assigned for ${username}`);
+        } else {
+            console.log(`[Creator] No proxy available for ${username} — proceeding without proxy`);
+            if (proxyError) console.log(`[Creator] Proxy error: ${proxyError.message}`);
+        }
+    } catch (e: any) {
+        console.log(`[Creator] Proxy assignment failed: ${e.message} — proceeding without proxy`);
     }
 
     // Get proxy details from the account (RPC updates the account)

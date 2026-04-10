@@ -38,6 +38,14 @@ export const INSTAGRAM_CONFIG = {
     appSecret: process.env.FACEBOOK_APP_SECRET || '',
 };
 
+// IPRoyal residential proxy config (mutable — updated by loadConfig())
+export const IPROYAL_CONFIG = {
+    gateway: 'geo.iproyal.com',
+    port: 12321,
+    username: '',
+    password: '',
+};
+
 // Working directories
 export const PATHS = {
     sessions: './sessions',
@@ -118,6 +126,12 @@ export async function loadConfig(): Promise<void> {
             if (secrets['secret:facebook_app_id']) INSTAGRAM_CONFIG.appId = secrets['secret:facebook_app_id'];
             if (secrets['secret:facebook_app_secret']) INSTAGRAM_CONFIG.appSecret = secrets['secret:facebook_app_secret'];
         }
+
+        // Update IPROYAL_CONFIG
+        if (settings['iproyal_gateway']) IPROYAL_CONFIG.gateway = settings['iproyal_gateway'];
+        if (settings['iproyal_port']) IPROYAL_CONFIG.port = parseInt(settings['iproyal_port'], 10);
+        if (settings['iproyal_username']) IPROYAL_CONFIG.username = settings['iproyal_username'];
+        if (settings['iproyal_password']) IPROYAL_CONFIG.password = settings['iproyal_password'];
 
         console.log('Config loaded from Supabase. N8N base:', SERVER_CONFIG.n8nWebhookBase);
     } catch (err) {

@@ -7,6 +7,7 @@ import Distribution from './pages/Distribution';
 import Analytics from './pages/Analytics';
 import TermsOfService from './pages/TermsOfService';
 import PrivacyPolicy from './pages/PrivacyPolicy';
+import { AccountCreation } from './pages/AccountCreation';
 
 const router = createBrowserRouter([
     {
@@ -20,6 +21,10 @@ const router = createBrowserRouter([
             {
                 path: 'accounts',
                 element: <Accounts />,
+            },
+            {
+                path: 'account-creation',
+                element: <AccountCreation />,
             },
             {
                 path: 'upload',

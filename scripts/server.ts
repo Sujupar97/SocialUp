@@ -23,7 +23,8 @@ import { duplicateVideo } from './video-processor';
 import { generateDescriptions } from './description-generator';
 import { getPublisher } from './publishers';
 import { WarmupAgent } from './warmup-agent';
-import { PATHS, SUPABASE_CONFIG, SERVER_CONFIG, loadConfig } from './config';
+import { PATHS, SUPABASE_CONFIG, SERVER_CONFIG, IPROYAL_CONFIG, loadConfig } from './config';
+import { AirtopClient } from '@airtop/sdk';
 import 'dotenv/config';
 
 const app = express();
@@ -615,6 +616,276 @@ app.post('/api/creation/create', async (req, res) => {
         if (!res.headersSent) {
             res.status(500).json({ error: err.message });
         }
+    }
+});
+
+// ========================================
+// Manual Account Creation (Airtop + IPRoyal)
+// ========================================
+
+const SIGNUP_URLS: Record<string, string> = {
+    tiktok: 'https://www.tiktok.com/signup/phone-or-email/email',
+    instagram: 'https://www.instagram.com/accounts/emailsignup/',
+    youtube: 'https://accounts.google.com/signup',
+};
+
+// In-memory map of active manual creation sessions
+const activeManualSessions = new Map<string, {
+    sessionId: string;
+    windowId: string;
+    platform: string;
+    email: string;
+}>();
+
+/**
+ * POST /api/creation/start-manual
+ * Start a manual account creation session with Airtop + proxy
+ */
+app.post('/api/creation/start-manual', async (req, res) => {
+    try {
+        const { platform } = req.body;
+        if (!['tiktok', 'instagram', 'youtube'].includes(platform)) {
+            return res.status(400).json({ error: 'Invalid platform' });
+        }
+
+        // Load config
+        const { data: settings } = await supabase
+            .from('app_settings')
+            .select('key, value')
+            .in('key', ['email_domain', 'airtop_api_key']);
+
+        const configMap: Record<string, string> = {};
+        for (const s of settings || []) configMap[s.key] = s.value;
+
+        const emailDomain = configMap['email_domain'];
+        const airtopKey = configMap['airtop_api_key'];
+
+        if (!emailDomain) return res.status(400).json({ error: 'email_domain not configured' });
+        if (!airtopKey) return res.status(400).json({ error: 'airtop_api_key not configured' });
+
+        // Generate identity
+        const email = `${platform}_${Date.now().toString(36)}${Math.random().toString(36).slice(2, 6)}@${emailDomain}`;
+        const password = `SUp${Date.now().toString(36)}!${Math.random().toString(36).slice(2, 8)}`;
+
+        // Create pending account
+        const { data: account, error: insertError } = await supabase
+            .from('accounts')
+            .insert({
+                platform,
+                username: `pending_${Date.now().toString(36)}`,
+                email_address: email,
+                login_password: password,
+                is_active: false,
+                creation_method: 'manual',
+                verification_status: 'ok',
+            })
+            .select('id')
+            .single();
+
+        if (insertError || !account) {
+            return res.status(500).json({ error: `DB error: ${insertError?.message}` });
+        }
+
+        // Build IPRoyal proxy URL
+        let proxyConfig: any = undefined;
+        let proxyIp = 'none';
+        if (IPROYAL_CONFIG.username && IPROYAL_CONFIG.password) {
+            const sessionId = account.id.replace(/-/g, '').slice(0, 16);
+            proxyConfig = {
+                url: `http://${IPROYAL_CONFIG.gateway}:${IPROYAL_CONFIG.port}`,
+                username: `${IPROYAL_CONFIG.username}_session-${sessionId}_lifetime-7d`,
+                password: IPROYAL_CONFIG.password,
+            };
+            proxyIp = `${IPROYAL_CONFIG.gateway} (session: ${sessionId})`;
+
+            // Save proxy to account
+            await supabase.from('accounts').update({
+                proxy_url: proxyConfig.url,
+                proxy_username: proxyConfig.username,
+                proxy_password: proxyConfig.password,
+            }).eq('id', account.id);
+        }
+
+        // Create Airtop session
+        const client = new AirtopClient({ apiKey: airtopKey });
+        const sessionConfig: any = {
+            solveCaptcha: true,
+            record: true,
+            timeoutMinutes: 30,
+        };
+        if (proxyConfig) {
+            sessionConfig.proxy = proxyConfig;
+        }
+
+        const session = await client.sessions.create({ configuration: sessionConfig });
+        const airtopSessionId = session.data?.id;
+        if (!airtopSessionId) throw new Error('Failed to create Airtop session');
+
+        // Create window
+        const window = await client.windows.create(airtopSessionId, {
+            url: SIGNUP_URLS[platform],
+        });
+        const windowId = window.data?.windowId;
+        if (!windowId) throw new Error('Failed to create Airtop window');
+
+        // Get live view URL
+        let liveViewUrl = '';
+        try {
+            const info = await (client.windows as any).getWindowInfo(airtopSessionId, windowId, {
+                screenResolution: '1280x720',
+                includeNavigationBar: true,
+                disableResize: false,
+            });
+            liveViewUrl = info.data?.liveViewUrl || '';
+        } catch { /* non-fatal */ }
+
+        // Log creation job
+        await supabase.from('account_creation_jobs').insert({
+            platform,
+            email_address: email,
+            status: 'creating',
+            account_id: account.id,
+        });
+
+        // Store session reference
+        activeManualSessions.set(account.id, {
+            sessionId: airtopSessionId,
+            windowId,
+            platform,
+            email,
+        });
+
+        console.log(`[ManualCreation] Started for ${platform}: ${email} (account: ${account.id})`);
+
+        res.json({
+            accountId: account.id,
+            sessionId: airtopSessionId,
+            windowId,
+            liveViewUrl,
+            email,
+            password,
+            proxyIp,
+            recordingUrl: `https://portal.airtop.ai/sessions/${airtopSessionId}`,
+        });
+    } catch (err: any) {
+        console.error('[ManualCreation] Start error:', err.message);
+        res.status(500).json({ error: err.message });
+    }
+});
+
+/**
+ * POST /api/creation/complete-manual
+ * Complete a manual account creation — activate account + save profile
+ */
+app.post('/api/creation/complete-manual', async (req, res) => {
+    try {
+        const { accountId, username } = req.body;
+        if (!accountId || !username) {
+            return res.status(400).json({ error: 'accountId and username required' });
+        }
+
+        const sessionData = activeManualSessions.get(accountId);
+
+        // Activate account
+        await supabase.from('accounts').update({
+            is_active: true,
+            username,
+            last_login_at: new Date().toISOString(),
+        }).eq('id', accountId);
+
+        // Save Airtop profile + terminate session
+        if (sessionData) {
+            try {
+                const { data: airtopKeySetting } = await supabase.from('app_settings').select('value').eq('key', 'airtop_api_key').single();
+                if (airtopKeySetting?.value) {
+                    const client = new AirtopClient({ apiKey: airtopKeySetting.value });
+                    const profileName = `${sessionData.platform}_${username}`;
+                    try {
+                        await (client.sessions as any).saveProfileOnTermination(sessionData.sessionId, profileName);
+                        await supabase.from('accounts').update({ airtop_profile_name: profileName } as any).eq('id', accountId);
+                    } catch { /* profile save is best-effort */ }
+                    await client.sessions.terminate(sessionData.sessionId);
+                }
+            } catch { /* non-fatal */ }
+            activeManualSessions.delete(accountId);
+        }
+
+        // Update job
+        await supabase.from('account_creation_jobs').update({
+            status: 'completed',
+            username,
+            completed_at: new Date().toISOString(),
+        }).eq('account_id', accountId);
+
+        console.log(`[ManualCreation] Completed: ${username} (${accountId})`);
+        res.json({ success: true });
+    } catch (err: any) {
+        res.status(500).json({ error: err.message });
+    }
+});
+
+/**
+ * POST /api/creation/cancel-manual
+ * Cancel a manual account creation — cleanup DB + terminate session
+ */
+app.post('/api/creation/cancel-manual', async (req, res) => {
+    try {
+        const { accountId } = req.body;
+        if (!accountId) return res.status(400).json({ error: 'accountId required' });
+
+        const sessionData = activeManualSessions.get(accountId);
+
+        // Terminate Airtop session
+        if (sessionData) {
+            try {
+                const { data: airtopKeySetting } = await supabase.from('app_settings').select('value').eq('key', 'airtop_api_key').single();
+                if (airtopKeySetting?.value) {
+                    const client = new AirtopClient({ apiKey: airtopKeySetting.value });
+                    await client.sessions.terminate(sessionData.sessionId);
+                }
+            } catch { /* non-fatal */ }
+            activeManualSessions.delete(accountId);
+        }
+
+        // Cleanup DB
+        await supabase.from('account_creation_jobs').delete().eq('account_id', accountId);
+        await supabase.from('proxy_account_assignments').delete().eq('account_id', accountId);
+        await supabase.from('accounts').delete().eq('id', accountId).eq('is_active', false);
+
+        console.log(`[ManualCreation] Cancelled: ${accountId}`);
+        res.json({ success: true });
+    } catch (err: any) {
+        res.status(500).json({ error: err.message });
+    }
+});
+
+/**
+ * GET /api/creation/email-inbox/:email
+ * Get verification codes received for a specific email
+ */
+app.get('/api/creation/email-inbox/:email', async (req, res) => {
+    try {
+        const email = req.params.email;
+        const { data, error } = await supabase
+            .from('email_verifications')
+            .select('verification_code, sender, subject, received_at')
+            .eq('email_address', email)
+            .eq('is_consumed', false)
+            .order('received_at', { ascending: false })
+            .limit(20);
+
+        if (error) return res.status(500).json({ error: error.message });
+
+        res.json({
+            codes: (data || []).map(d => ({
+                code: d.verification_code,
+                sender: d.sender,
+                subject: d.subject,
+                received_at: d.received_at,
+            })),
+        });
+    } catch (err: any) {
+        res.status(500).json({ error: err.message });
     }
 });
 

@@ -11,6 +11,7 @@
     "browser-server": "npx tsx scripts/browser-server.ts"
   },
   "dependencies": {
+    "@airtop/sdk": "^0.1.47",
     "@google/generative-ai": "^0.24.1",
     "@supabase/supabase-js": "^2.93.1",
     "cors": "^2.8.6",
